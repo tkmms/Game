@@ -16,7 +16,6 @@
     font-family:-apple-system,"Hiragino Sans","Yu Gothic",sans-serif;
   }
   #cv{display:block;position:fixed;inset:0;}
-
   .controls{
     position:fixed;left:0;right:0;height:50%;
     display:flex;align-items:flex-end;justify-content:space-between;
@@ -27,7 +26,6 @@
   .controls.bottom{bottom:0;padding-bottom:calc(16px + env(safe-area-inset-bottom));}
   .controls.top{top:0;transform:rotate(180deg);padding-bottom:calc(16px + env(safe-area-inset-top));}
   .group{display:flex;gap:16px;align-items:flex-end;}
-
   .btn{
     pointer-events:auto;
     width:clamp(62px, 10.5vh, 96px);
@@ -99,8 +97,7 @@ const MAX_VX       = 252;
 
 const SMALL_W = 28, SMALL_H = 40;
 const GROWTH_STEP = 0.22;
-
-const POPUP_MIN_Y = CAM_Y + 55;  // 画面上端の余白
+const POPUP_MIN_Y = CAM_Y + 55;
 
 let scale = 1;
 let viewW = 960;
@@ -231,13 +228,12 @@ function playerSize(growth){
   const s = 1 + growth * GROWTH_STEP;
   return { w: SMALL_W * s, h: SMALL_H * s };
 }
-/* キャラクター名（実況用） */
 function speakerName(p){
   return p.charName + 'さん';
 }
 
 /* =========================================================
-   オーディオ
+   オーディオ（SFX & BGM）
    ========================================================= */
 let audioCtx = null;
 let masterGain = null, bgmGain = null, sfxGain = null;
@@ -263,17 +259,57 @@ function initAudio(){
   for (let i=0;i<len;i++) d[i] = Math.random()*2-1;
 }
 function ensureAudio(){
-  if (audioInited) return;
-  try {
-    initAudio();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    startBGM();
-    audioInited = true;
-  } catch(e){}
+  if (!audioInited){
+    try {
+      initAudio();
+      startBGM();
+      audioInited = true;
+    } catch(e){ return; }
+  }
+  if (audioCtx && (audioCtx.state === 'suspended' || audioCtx.state === 'interrupted')){
+    audioCtx.resume().catch(()=>{});
+  }
 }
-document.addEventListener('pointerdown', ensureAudio, true);
-document.addEventListener('keydown', ensureAudio, true);
 
+/* =========================================================
+   音声合成（実況）— 参考ファイルのシンプル方式
+   ========================================================= */
+let speechUnlocked = false;
+let speechEnabled = true;
+
+function unlockSpeech(){
+  if (speechUnlocked) return;
+  speechUnlocked = true;
+  if (!('speechSynthesis' in window)) return;
+  try {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance('.');
+    u.lang = 'ja-JP';
+    u.rate = 10;
+    u.pitch = 1;
+    u.volume = 1.0;
+    window.speechSynthesis.speak(u);
+  } catch(_){}
+}
+
+function speak(text, opts){
+  if (!speechEnabled || !text) return;
+  if (!('speechSynthesis' in window)) return;
+  try {
+    // 参考ファイルと同じ: 毎回cancelしてからspeak（iOSで詰まるのを防ぐ）
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'ja-JP';
+    u.rate = (opts && opts.rate) || 1.15;
+    u.pitch = 1.05;
+    u.volume = 1.0;
+    window.speechSynthesis.speak(u);
+  } catch(_){}
+}
+
+/* =========================================================
+   BGM（自動生成）
+   ========================================================= */
 function playTone(freq, t0, dur, wave, vol, freqEnd){
   if (!audioCtx) return;
   const o = audioCtx.createOscillator();
@@ -338,7 +374,6 @@ function playGoalMelody(){
     playTone(f, t + i*0.42, 0.40, 'triangle', 0.16);
   });
 }
-
 function playBgmTone(freq, t, dur, wave, vol){
   const o = audioCtx.createOscillator();
   const g = audioCtx.createGain();
@@ -493,132 +528,6 @@ function stopBGM(){
   if (bgmTimer){ clearTimeout(bgmTimer); bgmTimer = null; }
   bgmState = null;
 }
-
-/* =========================================================
-   音声合成（実況）— iPad/iPhone 対応強化版
-   ========================================================= */
-let speechWarmedUp = false;
-let jaVoice = null;
-let lastSpeakTime = 0;
-let lastUtterance = null; // GC 防止
-let pendingSpeak = null;
-
-function pickJaVoice(){
-  if (!window.speechSynthesis) return null;
-  const vs = window.speechSynthesis.getVoices();
-  if (!vs || vs.length === 0) return null;
-  // 優先順位: ja-JP のローカル音声 > ja-JP > ja で始まる
-  let v = vs.find(x => x.lang === 'ja-JP' && x.localService);
-  if (v) return v;
-  v = vs.find(x => x.lang === 'ja-JP');
-  if (v) return v;
-  v = vs.find(x => x.lang && x.lang.toLowerCase().startsWith('ja'));
-  if (v) return v;
-  return null;
-}
-
-function refreshVoices(){
-  if (!window.speechSynthesis) return;
-  jaVoice = pickJaVoice();
-  // voiceschanged 後に強制的に読み込み完了を待つ
-  if (!jaVoice){
-    // 稀に非同期で読み込まれるので再取得をスケジュール
-    setTimeout(() => { jaVoice = pickJaVoice(); }, 200);
-    setTimeout(() => { jaVoice = pickJaVoice(); }, 800);
-  }
-}
-
-if (window.speechSynthesis){
-  refreshVoices();
-  window.speechSynthesis.onvoiceschanged = refreshVoices;
-  // ページ読み込み直後にも何度かトライ
-  setTimeout(refreshVoices, 100);
-  setTimeout(refreshVoices, 500);
-  setTimeout(refreshVoices, 1500);
-}
-
-/* 初回ユーザージェスチャで音声を有効化（iOS必須） */
-function warmupSpeech(){
-  if (!window.speechSynthesis) return;
-  if (speechWarmedUp) return;
-  speechWarmedUp = true;
-  try {
-    // 短い無音発話でアンロック
-    const u = new SpeechSynthesisUtterance(' ');
-    u.lang = 'ja-JP';
-    u.volume = 0;
-    u.rate = 10;
-    u.pitch = 1;
-    const v = pickJaVoice();
-    if (v) u.voice = v;
-    lastUtterance = u;
-    window.speechSynthesis.speak(u);
-    // 直後にキャンセルして無音を保証（無音なので影響なし）
-    setTimeout(() => {
-      try { window.speechSynthesis.cancel(); } catch(e){}
-      refreshVoices();
-    }, 60);
-  } catch(e){}
-}
-
-function speak(text, opts){
-  if (!window.speechSynthesis) return;
-  if (!text) return;
-  opts = opts || {};
-
-  const now = performance.now();
-
-  // 割り込み
-  if (opts.interrupt){
-    try { window.speechSynthesis.cancel(); } catch(e){}
-    pendingSpeak = null;
-  } else if (window.speechSynthesis.speaking || window.speechSynthesis.pending){
-    // 話し中のときは短いセリフはスキップ、長いものは保留
-    if (text.length > 12 && !pendingSpeak){
-      pendingSpeak = { text, opts, at: now };
-    }
-    return;
-  } else if (now - lastSpeakTime < (opts.minGap || 700)){
-    return;
-  }
-
-  actuallySpeak(text, opts);
-}
-
-function actuallySpeak(text, opts){
-  try {
-    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
-    if (!jaVoice) refreshVoices();
-
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'ja-JP';
-    if (jaVoice) u.voice = jaVoice;
-    u.rate  = opts.rate  || 1.28;
-    u.pitch = opts.pitch || 1.08;
-    u.volume = 1.0;
-
-    u.onstart = () => { lastSpeakTime = performance.now(); };
-    u.onerror = (e) => {
-      // エラー時は軽くログ（無視）
-    };
-
-    lastUtterance = u; // 参照保持
-    window.speechSynthesis.speak(u);
-    lastSpeakTime = performance.now();
-  } catch(e){}
-}
-
-// 保留中のセリフを定期的に再生
-setInterval(() => {
-  if (!window.speechSynthesis) return;
-  if (window.speechSynthesis.speaking || window.speechSynthesis.pending) return;
-  if (!pendingSpeak) return;
-  const now = performance.now();
-  if (now - pendingSpeak.at > 2500){ pendingSpeak = null; return; }
-  const item = pendingSpeak;
-  pendingSpeak = null;
-  actuallySpeak(item.text, item.opts);
-}, 260);
 
 /* =========================================================
    レベル生成
@@ -846,7 +755,7 @@ document.querySelectorAll('.btn').forEach(btn => {
   const down = e => {
     e.preventDefault();
     ensureAudio();
-    warmupSpeech();
+    unlockSpeech();
     btn.classList.add('active');
     if (k === 'left')  input[pi].left  = true;
     if (k === 'right') input[pi].right = true;
@@ -869,10 +778,18 @@ document.querySelectorAll('.btn').forEach(btn => {
   btn.addEventListener('contextmenu', e => e.preventDefault());
 });
 
+/* グローバル: 最初のタップで音声を確実にアンロック */
+document.addEventListener('pointerdown', function firstTouch(){
+  ensureAudio();
+  unlockSpeech();
+  document.removeEventListener('pointerdown', firstTouch);
+}, {capture:true, passive:true});
+
 window.addEventListener('keydown', e=>{
   const k = e.key;
   if (e.repeat) return;
-  warmupSpeech();
+  ensureAudio();
+  unlockSpeech();
   if (k==='ArrowLeft')  input[0].left  = true;
   if (k==='ArrowRight') input[0].right = true;
   if (k==='ArrowUp' || k===' '){ input[0].jumpBuffer=0.15; input[0].jumpHeld=true; e.preventDefault(); }
@@ -918,8 +835,7 @@ function updateParticles(dt){
 }
 function showPoints(x, y, text, color, opts){
   opts = opts || {};
-  // 画面上端を超えないよう Y をクランプ
-  let cy = Math.max(POPUP_MIN_Y, Math.min(y, GROUND_Y - 20));
+  const cy = Math.max(POPUP_MIN_Y, Math.min(y, GROUND_Y - 20));
   popups.push({
     x, y: cy, text, color: color || '#ffd23f',
     life: opts.big ? 2.1 : 1.15,
@@ -1001,7 +917,6 @@ function triggerBlock(s, p){
     spawnParticles(s.x + s.w/2, s.y + s.h/2, '#8b6b3f', 22, 260);
     return;
   }
-
   sfx('block');
   spawnBlockContents(s, p);
 }
@@ -1033,10 +948,10 @@ function killPlayer(p, fromPit){
     p.score -= actual;
     if (actual > 0) showPoints(p.safeX + 14, POPUP_MIN_Y, '-' + actual, '#ff5555');
     sfx('fall');
-    speak(speakerName(p) + '、穴に落ちた！', {minGap: 1400, rate: 1.3});
+    speak(speakerName(p) + '、穴に落ちた！');
   } else {
     sfx('die');
-    speak(speakerName(p) + '、やられた！', {minGap: 1400, rate: 1.3});
+    speak(speakerName(p) + '、やられた！');
   }
   if (p.y < 620) p.vy = -470; else p.vy = 0;
   p.vx = 0;
@@ -1225,9 +1140,9 @@ function updatePowerups(dt){
         spawnParticles(m.x+m.w/2, m.y+m.h/2, '#ffae42', 16, 230);
         showPoints(p.x + p.w/2, p.y - 20, '+' + gain, '#ffae42', {big: m.scale >= 1.5});
         if (m.scale >= 1.5){
-          speak(speakerName(p) + '、おっきいのたべた！', {minGap: 2000, rate: 1.3});
+          speak(speakerName(p) + '、おっきいのたべた！');
         } else {
-          speak(speakerName(p) + '、たべた！', {minGap: 2600, rate: 1.3});
+          speak(speakerName(p) + '、たべた！');
         }
         powerups.splice(i,1);
         break;
@@ -1269,7 +1184,7 @@ function updateEnemies(dt){
           sfx('stomp');
           spawnParticles(e.x+e.w/2, e.y+e.h/2, '#c98a4b', 12, 210);
           showPoints(p.x + p.w/2, p.y - 20, '+' + gain, '#5ee36a');
-          speak(speakerName(p) + '、ふみふみ！', {minGap: 1800, rate: 1.3});
+          speak(speakerName(p) + '、ふみふみ！');
         } else if (p.invuln <= 0){
           if (p.growth > 0){
             applyGrowth(p, -1);
@@ -1280,7 +1195,7 @@ function updateEnemies(dt){
             sfx('shrink');
             spawnParticles(p.x+p.w/2, p.y+p.h/2, '#ffd23f', 14, 240);
             showPoints(p.x + p.w/2, p.y - 20, '-50', '#ff9a9a');
-            speak(speakerName(p) + '、ちっちゃくなった！', {minGap: 2000, rate: 1.3});
+            speak(speakerName(p) + '、ちっちゃくなった！');
           } else {
             killPlayer(p, false);
           }
@@ -1350,19 +1265,17 @@ function checkGoal(){
       p.finishTime = p.raceTime;
 
       playGoalMelody();
-      speak(speakerName(p) + 'がゴール！', {interrupt: true, rate: 1.3});
+      speak(speakerName(p) + 'がゴール！');
 
-      // ゴールポイントは常に画面上部付近に表示
       showPoints(p.x + p.w/2, POPUP_MIN_Y, '+' + goalScore + ' ゴール', '#ffd23f', {big:true});
 
-      // サイズボーナスを 1.0 秒後に表示
       const sizeBonus = Math.floor(p.growth * 150);
       if (sizeBonus > 0){
         p.sizeBonus = sizeBonus;
         p.score += sizeBonus;
         setTimeout(() => {
           showPoints(p.x + p.w/2, POPUP_MIN_Y + 45, '+' + sizeBonus + ' サイズ', '#ffae42', {big:true});
-          speak(speakerName(p) + '、サイズボーナス' + sizeBonus + 'ポイント！', {rate:1.3, minGap:500});
+          speak(speakerName(p) + '、サイズボーナス' + sizeBonus + 'ポイント！');
         }, 1000);
       }
 
@@ -1371,7 +1284,6 @@ function checkGoal(){
           ['#ffd23f','#5ee36a','#ffffff','#ff8fd0'][i%4], 1, 340);
       }
 
-      // サイズボーナス表示のため 2.5 秒後に終了
       setTimeout(() => endGame(p), 2500);
       return;
     }
@@ -1398,9 +1310,9 @@ function endGame(winnerP){
   const finalWinner = computeWinner();
   setTimeout(() => {
     if (finalWinner === -1){
-      speak('ゲーム終了。ひきわけです！', {interrupt:true, rate:1.28});
+      speak('ゲーム終了。ひきわけです！');
     } else {
-      speak('ゲーム終了。勝者は、' + speakerName(P[finalWinner]) + '！', {interrupt:true, rate:1.28});
+      speak('ゲーム終了。勝者は、' + speakerName(P[finalWinner]) + '！');
     }
   }, 900);
 }
@@ -1439,7 +1351,6 @@ function resumeGame(){
 function quitToMenu(){
   gameState = 'menu';
   winnerIdx = -1;
-  try { window.speechSynthesis.cancel(); } catch(e){}
   if (audioInited && audioCtx){
     if (audioCtx.state === 'suspended') audioCtx.resume();
     startBGM();
@@ -2180,7 +2091,7 @@ function drawPaused(W, halfH){
 }
 
 /* =========================================================
-   結果画面（横スペースを活かした新レイアウト）
+   結果画面
    ========================================================= */
 function getOverButtons(W, halfH){
   const bw = W*0.28, bh = halfH*0.10;
@@ -2204,7 +2115,6 @@ function drawOver(W, halfH, idx){
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  /* ===== ヘッダー：WIN/LOSE + モード ===== */
   const fs1 = Math.round(halfH*0.11);
   ctx.font = '900 ' + fs1 + 'px -apple-system,"Hiragino Sans",sans-serif';
   const headerY = halfH*0.08;
@@ -2226,12 +2136,10 @@ function drawOver(W, halfH, idx){
   ctx.fillStyle = 'rgba(255,210,63,0.85)';
   ctx.fillText(MODE_ICONS[mode] + ' ' + MODE_LABELS[mode], W/2, halfH*0.155);
 
-  /* ===== ボディ：キャラクター（左）＋ 統計（右） ===== */
   const bodyTop = halfH * 0.19;
   const bodyBottom = halfH * 0.55;
   const bodyH = bodyBottom - bodyTop;
 
-  // キャラクター
   const charX = W * 0.13;
   const charY = bodyTop + bodyH * 0.42;
   const finalScale = 1 + p.growth * GROWTH_STEP;
@@ -2247,7 +2155,6 @@ function drawOver(W, halfH, idx){
   ctx.textBaseline = 'middle';
   ctx.fillText(p.charEmoji, charX, charY);
 
-  // サイズテキスト
   ctx.font = '900 ' + Math.round(halfH*0.033) + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.fillStyle = '#ffae42';
   ctx.fillText('SIZE ×' + finalScale.toFixed(1), charX, charY + charDisplaySize * 0.98);
@@ -2257,7 +2164,6 @@ function drawOver(W, halfH, idx){
     ctx.fillText('+' + p.sizeBonus + 'pt', charX, charY + charDisplaySize * 0.98 + halfH*0.042);
   }
 
-  // 統計（右側：2×2グリッド）
   const statLabelColor = 'rgba(255,255,255,0.72)';
   const statFontLabel = Math.round(halfH * 0.032);
   const statFontValue = Math.round(halfH * 0.052);
@@ -2268,7 +2174,6 @@ function drawOver(W, halfH, idx){
   const rowY2 = bodyTop + bodyH * 0.68;
   const valOffset = W * 0.14;
 
-  // ポイント
   const isPointsMode = (mode === 'points');
   ctx.font = '800 ' + statFontLabel + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.fillStyle = isPointsMode ? 'rgba(255,210,63,0.95)' : statLabelColor;
@@ -2278,7 +2183,6 @@ function drawOver(W, halfH, idx){
   ctx.fillStyle = isPointsMode ? '#ffd23f' : '#fff';
   ctx.fillText(p.score + 'pt', col1X + valOffset, rowY1);
 
-  // コイン
   const isCoinsMode = (mode === 'coins');
   ctx.font = '800 ' + statFontLabel + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.fillStyle = isCoinsMode ? 'rgba(255,210,63,0.95)' : statLabelColor;
@@ -2287,7 +2191,6 @@ function drawOver(W, halfH, idx){
   ctx.fillStyle = isCoinsMode ? '#ffd23f' : '#fff';
   ctx.fillText(p.coins + '枚', col2X + valOffset, rowY1);
 
-  // フミフミ
   const isStompsMode = (mode === 'stomps');
   ctx.font = '800 ' + statFontLabel + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.fillStyle = isStompsMode ? 'rgba(255,210,63,0.95)' : statLabelColor;
@@ -2296,7 +2199,6 @@ function drawOver(W, halfH, idx){
   ctx.fillStyle = isStompsMode ? '#ffd23f' : '#fff';
   ctx.fillText(p.stomps + '回', col1X + valOffset, rowY2);
 
-  // タイム
   const isTimeMode = (mode === 'time');
   ctx.font = '800 ' + statFontLabel + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.fillStyle = isTimeMode ? 'rgba(255,210,63,0.95)' : statLabelColor;
@@ -2305,30 +2207,23 @@ function drawOver(W, halfH, idx){
   ctx.fillStyle = isTimeMode ? '#ffd23f' : '#fff';
   ctx.fillText((p.finished ? p.finishTime.toFixed(1) + 's' : '---'), col2X + valOffset, rowY2);
 
-  /* ===== 食べたものセクション ===== */
   const foodY = halfH * 0.60;
-  const foodTitleW = W * 0.22;
 
-  // タイトル（左寄せ）
   ctx.font = '900 ' + Math.round(halfH*0.032) + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.textAlign = 'left';
   ctx.fillStyle = 'rgba(255,174,66,0.95)';
   ctx.fillText('たべたもの × ' + p.foodsEaten.length, W*0.04, foodY);
 
-  // アイコン（右側の広いスペース）
   if (p.foodsEaten.length > 0){
     const iconsLeft = W * 0.24;
     const iconsRight = W * 0.97;
     const availW = iconsRight - iconsLeft;
     const rowY = foodY;
-
-    // サイズ計算（大きめの絵文字）
     const baseSize = halfH * 0.075;
     const sizes = p.foodsEaten.map(f => baseSize * Math.min(f.scale, 1.6));
     let totalW = sizes.reduce((a,b)=>a+b, 0);
     let shrink = 1;
     if (totalW > availW) shrink = availW / totalW;
-
     let xCursor = iconsLeft;
     for (let i=0; i<p.foodsEaten.length; i++){
       const size = sizes[i] * shrink;
@@ -2340,9 +2235,7 @@ function drawOver(W, halfH, idx){
     }
   }
 
-  /* ===== ふみふみセクション ===== */
   const stompY = halfH * 0.72;
-
   ctx.font = '900 ' + Math.round(halfH*0.032) + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.textAlign = 'left';
   ctx.fillStyle = 'rgba(94,227,106,0.95)';
@@ -2358,7 +2251,6 @@ function drawOver(W, halfH, idx){
     let totalW = sizes.reduce((a,b)=>a+b, 0);
     let shrink = 1;
     if (totalW > availW) shrink = availW / totalW;
-
     let xCursor = iconsLeft;
     for (let i=0; i<p.stompedEnemies.length; i++){
       const size = sizes[i] * shrink;
@@ -2370,7 +2262,6 @@ function drawOver(W, halfH, idx){
     }
   }
 
-  /* ===== ボタン ===== */
   const btn = getOverButtons(W, halfH);
   let grad = ctx.createLinearGradient(btn.replay.x, btn.replay.y, btn.replay.x, btn.replay.y+btn.replay.h);
   grad.addColorStop(0, '#ffd94a'); grad.addColorStop(1, '#f5a623');
@@ -2473,6 +2364,7 @@ function handleCanvasTap(sx, sy){
         if (charSelected[idx] === null){
           charSelected[idx] = i;
           sfx('select');
+          speak(CHARACTERS[i].n + 'さん、えらんだ！');
         }
         return;
       }
@@ -2500,7 +2392,7 @@ function handleCanvasTap(sx, sy){
 }
 cv.addEventListener('pointerdown', e => {
   ensureAudio();
-  warmupSpeech();
+  unlockSpeech();
   const rect = cv.getBoundingClientRect();
   const sx = (e.clientX - rect.left) * (cv.width / rect.width);
   const sy = (e.clientY - rect.top) * (cv.height / rect.height);
@@ -2515,6 +2407,7 @@ function selectMode(m){
   charSelected = [null, null];
   charSelectTimer = 0;
   gameState = 'charSelect';
+  speak(MODE_LABELS[m] + 'モード、スタート！');
 }
 
 function startGame(){
@@ -2534,7 +2427,7 @@ function startGame(){
     if (audioCtx.state === 'suspended') audioCtx.resume();
     startBGM();
   }
-  speak('たいせん、スタート！', {interrupt:true, rate:1.3});
+  speak('たいせん、スタート！');
 }
 
 function restart(){
@@ -2554,7 +2447,7 @@ function restart(){
     if (audioCtx.state === 'suspended') audioCtx.resume();
     startBGM();
   }
-  speak('もういちど、スタート！', {interrupt:true, rate:1.3});
+  speak('もういちど、スタート！');
 }
 
 /* =========================================================

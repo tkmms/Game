@@ -111,6 +111,73 @@ let scale = 1;
 let viewW = 960;
 
 /* =========================================================
+   キャラクター & 敵リスト
+   ========================================================= */
+const CHARACTERS = [
+  {e:'🦆', n:'アヒル'},
+  {e:'🦅', n:'ワシ'},
+  {e:'🐝', n:'ハチ'},
+  {e:'🐛', n:'虫'},
+  {e:'🐜', n:'アリ'},
+  {e:'🐢', n:'カメ'},
+  {e:'🦖', n:'ティラノサウルス'},
+  {e:'🦕', n:'恐竜'},
+  {e:'🦑', n:'イカ'},
+  {e:'🦐', n:'エビ'},
+  {e:'🐟', n:'魚'},
+  {e:'🐡', n:'フグ'},
+  {e:'🦈', n:'サメ'},
+  {e:'🐳', n:'クジラ'},
+  {e:'🐋', n:'クジラ'},
+  {e:'🐬', n:'イルカ'},
+  {e:'🦭', n:'アザラシ'},
+  {e:'🦓', n:'シマウマ'},
+  {e:'🦒', n:'キリン'},
+  {e:'🐘', n:'ゾウ'},
+  {e:'🦏', n:'サイ'},
+  {e:'🦛', n:'カバ'},
+  {e:'🐫', n:'ラクダ'},
+  {e:'🦘', n:'カンガルー'},
+  {e:'🐄', n:'牛'},
+  {e:'🐎', n:'馬'},
+  {e:'🐖', n:'ブタ'},
+  {e:'🐏', n:'ヒツジ'},
+  {e:'🐑', n:'ヒツジ'},
+  {e:'🦙', n:'ラマ'},
+  {e:'🐐', n:'ヤギ'},
+  {e:'🦌', n:'シカ'},
+  {e:'🐕', n:'犬'},
+  {e:'🐈', n:'猫'},
+  {e:'🐓', n:'ニワトリ'},
+  {e:'🦜', n:'オウム'},
+  {e:'🦢', n:'ハクチョウ'},
+  {e:'🦩', n:'フラミンゴ'},
+  {e:'🕊️', n:'ハト'},
+  {e:'🐇', n:'ウサギ'},
+  {e:'🦝', n:'アライグマ'},
+  {e:'🦨', n:'スカンク'},
+  {e:'🐿️', n:'リス'},
+  {e:'🦔', n:'ハリネズミ'}
+];
+
+const ENEMY_TYPES = [
+  {e:'🚗', n:'車'},
+  {e:'🚕', n:'タクシー'},
+  {e:'🚌', n:'バス'},
+  {e:'🏎️', n:'レーシングカー'},
+  {e:'🚓', n:'パトカー'},
+  {e:'🚑', n:'救急車'},
+  {e:'🚒', n:'消防車'},
+  {e:'🚛', n:'トラック'},
+  {e:'🚜', n:'トラクター'},
+  {e:'🏍️', n:'バイク'},
+  {e:'🛵', n:'スクーター'},
+  {e:'🚲', n:'自転車'}
+];
+
+const EMOJI_FONT = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","EmojiOne Color",sans-serif';
+
+/* =========================================================
    リサイズ
    ========================================================= */
 function resize(){
@@ -232,6 +299,8 @@ function sfx(type){
       playTone(90,  t+0.02, 0.10, 'triangle', 0.16);
       break;
     case 'emerge':  playTone(500, t, 0.10, 'square', 0.16, 1100); break;
+    case 'select':  playTone(880, t, 0.06, 'square', 0.20);
+                    playTone(1174, t+0.05, 0.10, 'square', 0.18); break;
     case 'powerup':
       [523,659,784,1047,1319].forEach((f,i)=> playTone(f, t+i*0.05, 0.18, 'square', 0.20));
       break;
@@ -465,17 +534,21 @@ function generateLevel(){
     const sx   = x + gap;
     solids.push({x:sx, y:GROUND_Y, w:segW, h:220, ground:true});
 
+    // --- 敵（車両：ランダムな種類） ---
     const nE = segW > 470 ? 2 : 1;
     for (let i=0;i<nE;i++){
       const ex = sx + 70 + Math.random()*(segW-150);
+      const et = ENEMY_TYPES[rndI(0, ENEMY_TYPES.length-1)];
       enemies.push({
         x:ex, y:GROUND_Y-30, w:34, h:30,
         vx:(Math.random()<0.5?-1:1)*58,
         min: sx+18, max: sx+segW-18,
-        dead:false, timer:0, anim: Math.random()*10
+        dead:false, timer:0, anim: Math.random()*10,
+        emoji: et.e, typeName: et.n
       });
     }
 
+    // --- 浮遊足場 ---
     let platform = null;
     if (Math.random() < 0.82){
       const pw = rnd(90,160);
@@ -495,6 +568,8 @@ function generateLevel(){
       }
     }
 
+    // --- はてなブロック ---
+    // 浮遊足場と重なる場合は、足場の上に十分なクリアランスを確保して配置
     if (segW > 320 && Math.random() < 0.85){
       const nB = rndI(1,3);
       const bw = 32, bh = 32;
@@ -502,18 +577,23 @@ function generateLevel(){
       for (let i=0;i<nB;i++){
         const bx = startX + i*36;
         let by = GROUND_Y - 180;
-        let moved = true, iter = 0;
-        while (moved && iter < 6){
-          moved = false;
+
+        // 既存の足場と x 範囲が重なる場合、十分な高さまで押し上げる
+        // キャラクター（最大56px）がブロックと足場の間に入れるよう 78px のクリアランス
+        let changed = true, iter = 0;
+        while (changed && iter < 8){
+          changed = false;
           for (const s of solids){
+            if (s.ground) continue;
             if (s.x + s.w <= bx || s.x >= bx + bw) continue;
-            if (by + bh > s.y && by < s.y + s.h){
-              by = s.y - bh - 20;
-              moved = true;
-            }
+            if (by >= s.y + s.h) continue;              // ブロックが足場より下 → OK
+            if (by + bh <= s.y - 66) continue;          // すでに十分なクリアランス
+            by = s.y - 78 - bh;
+            changed = true;
           }
           iter++;
         }
+
         if (isFree(bx-4, by-4, bw+8, bh+8, 6)){
           solids.push({
             x:bx, y:by, w:bw, h:bh,
@@ -583,13 +663,15 @@ function generateLevel(){
 /* =========================================================
    プレイヤー
    ========================================================= */
-function makePlayer(idx){
+function makePlayer(idx, charDef){
   const isRed = (idx === 0);
+  const ch = charDef || CHARACTERS[idx];
   return {
     idx,
     main:  isRed ? '#e63946' : '#2fa84f',
     dark:  isRed ? '#c62b38' : '#1d7a37',
-    pants: isRed ? '#2b62d9' : '#166534',
+    charEmoji: ch.e,
+    charName:  ch.n,
     x: 60 + idx*54, y: GROUND_Y - SMALL_H,
     w: SMALL_W, h: SMALL_H,
     vx:0, vy:0, onGround:false, face:1,
@@ -602,16 +684,20 @@ function makePlayer(idx){
     raceTime: 0, finished: false, finishTime: 0
   };
 }
-let P = [ makePlayer(0), makePlayer(1) ];
 
 /* =========================================================
    ゲーム状態
    ========================================================= */
 let mode = 'points';
-let gameState = 'menu';
+let gameState = 'menu';   // menu | charSelect | playing | paused | over
 let gameTime = 0;
 let gameOverAt = 0;
 let winnerIdx = -1;
+
+let charSelected = [null, null];
+let charSelectTimer = 0;
+
+let P = [ makePlayer(0, CHARACTERS[0]), makePlayer(1, CHARACTERS[1]) ];
 
 const MODE_LABELS = {
   points: '総合ポイント',
@@ -735,7 +821,6 @@ function updatePopups(dt){
 }
 function drawPopup(pp){
   const k = clamp(pp.life / pp.maxLife, 0, 1);
-  // フェードイン・アウト
   const alpha = k > 0.75 ? (1 - k) * 4 : Math.min(1, k * 2.2);
   ctx.save();
   ctx.globalAlpha = clamp(alpha, 0, 1);
@@ -802,7 +887,6 @@ function killPlayer(p){
   sfx('die');
   spawnParticles(p.x+p.w/2, p.y+p.h/2, p.main, 18, 290);
 }
-
 function growPlayer(p){
   if (p.big) return false;
   p.big = true;
@@ -831,7 +915,6 @@ function updatePlayer(p, dt){
       p.dead = false;
       p.big = false;
       p.w = SMALL_W; p.h = SMALL_H;
-      // 死亡した付近の地面位置に復活
       p.x = p.safeX;
       p.y = p.safeFeetY - SMALL_H;
       p.vx = 0; p.vy = 0;
@@ -897,7 +980,6 @@ function updatePlayer(p, dt){
 
   if (p.onGround){
     p.coyote = 0.1;
-    // 最後に地面にいた位置を毎回更新（ダメージ時の復活位置になる）
     p.safeX = p.x;
     p.safeFeetY = p.y + p.h;
   } else {
@@ -1052,22 +1134,26 @@ function updateCoins(dt){
 }
 
 /* =========================================================
-   ゴール（先着で終了、高さでボーナス）
+   ゴール（先着で終了／高さで 100〜300 ポイント）
    ========================================================= */
 function checkGoal(){
   for (const p of P){
     if (p.finished || p.dead) continue;
     if (p.x + p.w > GOAL_X){
       p.finished = true;
-      // 地面からの高さでボーナス
+
+      // 地面からの高さに応じてボーナス（0〜200）
       const hAbove = Math.max(0, (GROUND_Y - p.h) - p.y);
-      const heightBonus = Math.min(1000, Math.floor(hAbove * 5));
-      const goalScore = 500 + heightBonus;
+      const heightBonus = Math.min(200, Math.floor(hAbove));
+      const goalScore = 100 + heightBonus;   // 100〜300
+
       p.score += goalScore;
       p.finishTime = p.raceTime;
 
       sfx('goal');
-      showPoints(p.x + p.w/2, p.y - 26, '+' + goalScore, '#ffd23f');
+      // 獲得ポイントを見えるように表示
+      showPoints(p.x + p.w/2, p.y - 30, '+' + goalScore, '#ffd23f');
+
       for (let i=0;i<50;i++){
         spawnParticles(GOAL_X + rnd(-70,70), 200 + rnd(-90,90),
           ['#ffd23f','#5ee36a','#ffffff','#ff8fd0'][i%4], 1, 340);
@@ -1077,13 +1163,11 @@ function checkGoal(){
     }
   }
 }
-
 function endGame(winnerP){
   gameState = 'over';
   gameOverAt = gameTime;
   winnerIdx = winnerP ? winnerP.idx : -1;
 }
-
 function computeWinner(){
   if (winnerIdx >= 0) return winnerIdx;
   const [p0, p1] = P;
@@ -1139,6 +1223,13 @@ function update(dt){
     updatePowerups(dt);
     updateEnemies(dt);
     checkGoal();
+  } else if (gameState === 'charSelect'){
+    if (charSelected[0] !== null && charSelected[1] !== null){
+      charSelectTimer += dt;
+      if (charSelectTimer > 0.7){
+        startGame();
+      }
+    }
   } else {
     for (const e of enemies){
       if (!e.dead) e.anim += dt*3;
@@ -1317,10 +1408,10 @@ function drawGoal(){
   ctx.fillStyle = '#c3c3d4';
   ctx.fillRect(GOAL_X+1, baseY-250, 3, 226);
 
-  // 高さボーナスの目盛り
+  // 高さの目盛り（上に行くほど高得点）
   for (let i=0;i<5;i++){
     const y = baseY - 60 - i*40;
-    ctx.fillStyle = i === 4 ? 'rgba(255,210,63,0.9)' : 'rgba(255,210,63,0.5)';
+    ctx.fillStyle = i === 4 ? 'rgba(255,210,63,0.95)' : 'rgba(255,210,63,0.5)';
     ctx.fillRect(GOAL_X - 12, y, 24, 2);
   }
 
@@ -1347,7 +1438,7 @@ function drawGoal(){
 }
 
 /* =========================================================
-   コイン・キノコ・敵・プレイヤー
+   コイン・キノコ
    ========================================================= */
 function drawCoin(c){
   const bob = c.pop ? 0 : Math.sin(time*3 + c.phase) * 4;
@@ -1420,98 +1511,82 @@ function drawMushroom(m){
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(cx, by-11, 14, Math.PI, 0); ctx.stroke();
 }
+
+/* =========================================================
+   敵（車両絵文字）
+   ========================================================= */
 function drawEnemy(e){
   const cx = e.x + e.w/2;
   const by = e.y + e.h;
+
   ctx.save();
   if (e.dead){
     const k = clamp(e.timer/0.45, 0, 1);
     ctx.translate(cx, by);
-    ctx.scale(1 + (1-k)*0.5, k);
+    ctx.scale(1 + (1-k)*0.4, k);
     ctx.translate(-cx, -by);
     ctx.globalAlpha = k;
   } else {
     ctx.translate(0, Math.sin(e.anim)*1.2);
   }
-  ctx.fillStyle = 'rgba(0,0,0,0.16)';
-  ctx.beginPath(); ctx.ellipse(cx, by-1, 17, 5, 0, 0, Math.PI*2); ctx.fill();
-  const step = Math.sin(e.anim*1.6) * 4;
-  ctx.fillStyle = '#5a3216';
-  ctx.beginPath(); ctx.ellipse(cx-9+step, by-4, 8, 5, 0, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(cx+9-step, by-4, 8, 5, 0, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = '#8b4a1e';
-  ctx.beginPath();
-  ctx.ellipse(cx, by-15, 17, 15, 0, Math.PI, 0);
-  ctx.lineTo(cx+17, by-6);
-  ctx.lineTo(cx-17, by-6);
-  ctx.closePath(); ctx.fill();
-  ctx.fillStyle = '#b3672c';
-  ctx.beginPath(); ctx.ellipse(cx, by-16, 13, 11, 0, Math.PI, 0); ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.ellipse(cx-6, by-16, 4.5, 5.5, 0, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(cx+6, by-16, 4.5, 5.5, 0, 0, Math.PI*2); ctx.fill();
-  const look = e.vx < 0 ? -1.5 : 1.5;
-  ctx.fillStyle = '#1a1a1a';
-  ctx.beginPath(); ctx.arc(cx-6+look, by-16, 2.3, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(cx+6+look, by-16, 2.3, 0, Math.PI*2); ctx.fill();
-  ctx.strokeStyle = '#3a1f0a';
-  ctx.lineWidth = 2.2;
-  ctx.beginPath();
-  ctx.moveTo(cx-10, by-23); ctx.lineTo(cx-3, by-21);
-  ctx.moveTo(cx+10, by-23); ctx.lineTo(cx+3, by-21);
-  ctx.stroke();
+
+  // 影
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath(); ctx.ellipse(cx, by-1, e.w*0.55, 5, 0, 0, Math.PI*2); ctx.fill();
+
+  // 絵文字
+  ctx.save();
+  ctx.translate(cx, by - e.h/2);
+  if (e.vx > 0) ctx.scale(-1, 1);  // 右向きのとき左右反転
+  const size = Math.max(e.w, e.h) * 1.45;
+  ctx.font = size + 'px ' + EMOJI_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(e.emoji, 0, 0);
+  ctx.restore();
+
   ctx.restore();
 }
+
+/* =========================================================
+   プレイヤー（動物絵文字）
+   ========================================================= */
 function drawPlayer(p){
   const x = p.x, y = p.y, w = p.w, h = p.h;
-  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+
+  // 影
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
   ctx.beginPath();
-  ctx.ellipse(x + w/2, y + h + 2, w*0.5, 5, 0, 0, Math.PI*2);
+  ctx.ellipse(x + w/2, y + h + 2, w*0.55, 5, 0, 0, Math.PI*2);
   ctx.fill();
+
   ctx.save();
   if (p.dead) ctx.globalAlpha = 0.55;
   else if (p.invuln > 0 && Math.floor(time*18) % 2 === 0) ctx.globalAlpha = 0.4;
-  ctx.translate(x + w/2, y + h/2);
-  ctx.scale(p.face, 1);
-  ctx.translate(-(x + w/2), -(y + h/2));
-  const swing = (p.onGround && Math.abs(p.vx) > 20) ? Math.sin(p.runTime*1.4)*4 : 0;
-  const scaleH = h / SMALL_H;
-  ctx.fillStyle = '#4a2f14';
-  ctx.beginPath();
-  ctx.ellipse(x + 8 + swing,     y + h - 4, 7.5, 4.5, 0, 0, Math.PI*2);
-  ctx.ellipse(x + w - 8 - swing, y + h - 4, 7.5, 4.5, 0, 0, Math.PI*2);
-  ctx.fill();
-  ctx.fillStyle = p.pants;
-  roundRect(ctx, x+4, y + h*0.52, w-8, h*0.40, 3); ctx.fill();
-  ctx.fillStyle = p.main;
-  roundRect(ctx, x+2, y + h*0.38, w-4, h*0.24, 3); ctx.fill();
-  ctx.fillStyle = p.main;
-  ctx.beginPath();
-  ctx.ellipse(x+2,   y + h*0.52, 5, 6*scaleH, 0, 0, Math.PI*2);
-  ctx.ellipse(x+w-2, y + h*0.52, 5, 6*scaleH, 0, 0, Math.PI*2);
-  ctx.fill();
-  ctx.fillStyle = '#ffcfa8';
-  ctx.beginPath();
-  ctx.arc(x+2,   y + h*0.65, 4*scaleH, 0, Math.PI*2);
-  ctx.arc(x+w-2, y + h*0.65, 4*scaleH, 0, Math.PI*2);
-  ctx.fill();
-  const faceY = y + h*0.08;
-  const faceH = h*0.34;
-  ctx.fillStyle = '#ffcfa8';
-  roundRect(ctx, x+4, faceY, w-8, faceH, 4); ctx.fill();
-  ctx.fillStyle = '#5a3010';
-  ctx.fillRect(x+3, faceY + h*0.15, 4, h*0.18);
-  ctx.fillStyle = p.main;
-  roundRect(ctx, x+2, y, w-4, h*0.18, 4); ctx.fill();
-  ctx.fillRect(x+1, y + h*0.14, w-2, h*0.08);
-  ctx.fillStyle = p.dark;
-  ctx.fillRect(x+1, y + h*0.19, w-2, h*0.05);
-  ctx.fillStyle = '#1a1a1a';
-  ctx.fillRect(x + w - 11, faceY + h*0.12, 3, h*0.11);
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(x + w - 10.2, faceY + h*0.14, 1.2, h*0.04);
-  ctx.fillStyle = '#5a3010';
-  ctx.fillRect(x + w - 13, faceY + h*0.26, 10, h*0.07);
+
+  const cx = x + w/2;
+  const cy = y + h/2;
+
+  // プレイヤー識別リング
+  const ringR = Math.max(w, h) * 0.62;
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = p.main;
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, Math.PI*2); ctx.stroke();
+
+  // 絵文字
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (p.dead) ctx.rotate((0.95 - p.deadTimer) * 5);
+  if (p.face === 1) ctx.scale(-1, 1);  // 右向きのとき左右反転
+  const size = Math.max(w, h) * 1.15;
+  ctx.font = size + 'px ' + EMOJI_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(p.charEmoji, 0, h * 0.02);
+  ctx.restore();
+
   ctx.restore();
 }
 function drawParticle(p){
@@ -1554,7 +1629,7 @@ function drawWorld(camX){
 }
 
 /* =========================================================
-   HUD（コイン・タイム・ポイントを最上段に配置）
+   HUD
    ========================================================= */
 function drawPill(x, y, w, h, borderColor){
   ctx.fillStyle = 'rgba(0,0,0,0.4)';
@@ -1563,7 +1638,6 @@ function drawPill(x, y, w, h, borderColor){
   ctx.lineWidth = Math.max(1.5, h*0.055);
   roundRect(ctx, x, y, w, h, h/2); ctx.stroke();
 }
-
 function drawHUD(idx, W, halfH){
   const p = P[idx];
   const pad = Math.round(halfH * 0.042);
@@ -1575,7 +1649,7 @@ function drawHUD(idx, W, halfH){
   ctx.font = '800 ' + fs + 'px -apple-system,"Hiragino Sans","Yu Gothic",sans-serif';
   ctx.textBaseline = 'middle';
 
-  /* ===== 左：コイン（"500コイン"） ===== */
+  // 左：コイン
   const coinStr = p.coins + 'コイン';
   const cw = ctx.measureText(coinStr).width + ch*1.55;
   drawPill(pad, pad, cw, ch);
@@ -1588,14 +1662,13 @@ function drawHUD(idx, W, halfH){
   ctx.textAlign = 'left';
   ctx.fillText(coinStr, pad + ch*0.92, cy + fs*0.06);
 
-  /* ===== 中央：タイム（"12.3秒"） ===== */
+  // 中央：タイム
   const timeStr = p.finished
     ? p.finishTime.toFixed(1) + '秒'
     : p.raceTime.toFixed(1) + '秒';
   const tw = ctx.measureText(timeStr).width + ch*1.65;
   const tx = (W - tw) / 2;
   drawPill(tx, pad, tw, ch, p.finished ? 'rgba(255,210,63,0.85)' : 'rgba(255,255,255,0.32)');
-  // 時計アイコン（円＋針）
   const clockX = tx + ch*0.55;
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = Math.max(2, ch*0.06);
@@ -1610,7 +1683,7 @@ function drawHUD(idx, W, halfH){
   ctx.textAlign = 'left';
   ctx.fillText(timeStr, tx + ch*1.0, cy + fs*0.06);
 
-  /* ===== 右：ポイント（"500ポイント"） ===== */
+  // 右：ポイント
   const scStr = p.score + 'ポイント';
   const sw = ctx.measureText(scStr).width + ch*1.55;
   const sx = W - pad - sw;
@@ -1623,11 +1696,10 @@ function drawHUD(idx, W, halfH){
   ctx.textAlign = 'left';
   ctx.fillText(scStr, sx + ch*0.98, cy + fs*0.06);
 
-  /* ===== 2段目：モードタグ（左）、一時停止ボタン（右） ===== */
+  // 2段目
   const row2Y = pad + ch + Math.round(pad*0.55);
   const row2H = Math.round(ch * 0.9);
 
-  // モードタグ
   ctx.font = '800 ' + Math.round(fs*0.92) + 'px -apple-system,"Hiragino Sans",sans-serif';
   const mtxt = MODE_ICONS[mode] + ' ' + MODE_LABELS[mode];
   const mw = ctx.measureText(mtxt).width + ch*1.0;
@@ -1636,7 +1708,6 @@ function drawHUD(idx, W, halfH){
   ctx.textAlign = 'left';
   ctx.fillText(mtxt, pad + ch*0.5, row2Y + row2H/2 + fs*0.05);
 
-  // 一時停止ボタン
   const pw = Math.round(ch * 1.9);
   const px = W - pad - pw;
   drawPill(px, row2Y, pw, row2H, 'rgba(255,255,255,0.5)');
@@ -1648,7 +1719,6 @@ function drawHUD(idx, W, halfH){
   ctx.fillRect(bcx - bw*1.1 - bw/2, bcy - bh/2, bw, bh);
   ctx.fillRect(bcx + bw*1.1 - bw/2, bcy - bh/2, bw, bh);
 
-  /* ===== パワー状態 ===== */
   if (p.big){
     const by = row2Y + row2H + Math.round(pad*0.5);
     ctx.font = '900 ' + Math.round(fs*0.95) + 'px -apple-system,sans-serif';
@@ -1697,6 +1767,11 @@ function drawOppIndicator(idx, W, halfH, camX){
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = 2;
   ctx.stroke();
+  // 相手のキャラ絵文字
+  ctx.font = '22px ' + EMOJI_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(opp.charEmoji, x, y);
   ctx.restore();
 }
 
@@ -1720,7 +1795,7 @@ function getModeButtons(W, halfH){
   }
   return rects;
 }
-function drawMenu(W, halfH, idx){
+function drawMenu(W, halfH){
   ctx.fillStyle = 'rgba(6,10,20,0.72)';
   ctx.fillRect(0, 0, W, halfH);
   ctx.save();
@@ -1756,6 +1831,129 @@ function drawMenu(W, halfH, idx){
     ctx.textAlign = 'center';
     ctx.fillText(MODE_LABELS[r.mode], r.x + r.w/2 + r.h*0.2, r.y + r.h*0.55);
   }
+  ctx.restore();
+}
+
+/* =========================================================
+   キャラクター選択画面
+   ========================================================= */
+function getCharGridLayout(W, halfH){
+  const cols = 9;
+  const rows = 5;
+  const topMargin = halfH*0.18;
+  const bottomMargin = halfH*0.12;
+  const availH = halfH - topMargin - bottomMargin;
+  const availW = W * 0.94;
+  const cell = Math.min(availW/cols, availH/rows);
+  const gridW = cell * cols;
+  const gridH = cell * rows;
+  const startX = (W - gridW)/2;
+  const startY = topMargin + (availH - gridH)/2;
+  const cells = [];
+  for (let r=0; r<rows; r++){
+    for (let c=0; c<cols; c++){
+      cells.push({
+        x: startX + c*cell,
+        y: startY + r*cell,
+        w: cell,
+        h: cell
+      });
+    }
+  }
+  return cells;
+}
+
+function drawCharSelect(W, halfH, idx){
+  ctx.fillStyle = 'rgba(6,10,20,0.85)';
+  ctx.fillRect(0, 0, W, halfH);
+
+  ctx.save();
+  ctx.textBaseline = 'middle';
+
+  // タイトル
+  const fs1 = Math.round(halfH*0.06);
+  ctx.font = '900 ' + fs1 + 'px -apple-system,"Hiragino Sans",sans-serif';
+  ctx.fillStyle = '#ffd23f';
+  ctx.textAlign = 'center';
+  ctx.fillText('キャラクターを えらんでね', W/2, halfH*0.075);
+
+  const myColor  = idx === 0 ? '#e63946' : '#2fa84f';
+  const oppColor = idx === 0 ? '#2fa84f' : '#e63946';
+
+  const cells = getCharGridLayout(W, halfH);
+
+  for (let i=0; i<cells.length; i++){
+    const cell = cells[i];
+    const chDef = CHARACTERS[i];
+    if (!chDef) continue;
+
+    const mySel  = charSelected[idx] === i;
+    const oppSel = charSelected[1-idx] === i;
+
+    // 背景
+    if (mySel){
+      ctx.fillStyle = 'rgba(255,210,63,0.35)';
+    } else if (oppSel){
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    }
+    roundRect(ctx, cell.x+2, cell.y+2, cell.w-4, cell.h-4, cell.h*0.22);
+    ctx.fill();
+
+    // ボーダー
+    if (mySel){
+      ctx.strokeStyle = myColor;
+      ctx.lineWidth = 4;
+      roundRect(ctx, cell.x+2, cell.y+2, cell.w-4, cell.h-4, cell.h*0.22);
+      ctx.stroke();
+    } else if (oppSel){
+      ctx.strokeStyle = oppColor;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([6,4]);
+      roundRect(ctx, cell.x+2, cell.y+2, cell.w-4, cell.h-4, cell.h*0.22);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // 絵文字
+    const emojiSize = Math.round(cell.h*0.72);
+    ctx.font = emojiSize + 'px ' + EMOJI_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(chDef.e, cell.x + cell.w/2, cell.y + cell.h/2 + cell.h*0.02);
+  }
+
+  // 下部ステータス
+  const fs2 = Math.round(halfH*0.045);
+  ctx.font = '800 ' + fs2 + 'px -apple-system,"Hiragino Sans",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  if (charSelected[idx] === null){
+    ctx.fillStyle = '#fff';
+    ctx.fillText('えらんでください', W/2, halfH - halfH*0.05);
+  } else if (charSelected[1-idx] === null){
+    ctx.fillStyle = myColor;
+    ctx.fillText('あいてを まっています...', W/2, halfH - halfH*0.05);
+  } else {
+    ctx.fillStyle = '#5ee36a';
+    const blink = 0.6 + Math.sin(time*8)*0.4;
+    ctx.globalAlpha = blink;
+    ctx.fillText('スタート！', W/2, halfH - halfH*0.05);
+    ctx.globalAlpha = 1;
+  }
+
+  // 選択中プレビュー
+  if (charSelected[idx] !== null){
+    const sel = CHARACTERS[charSelected[idx]];
+    ctx.font = '900 ' + Math.round(fs1*0.7) + 'px -apple-system,"Hiragino Sans",sans-serif';
+    ctx.fillStyle = myColor;
+    ctx.textAlign = 'left';
+    ctx.fillText(sel.e + ' ' + sel.n, W*0.03, halfH*0.075);
+  }
+
   ctx.restore();
 }
 
@@ -1900,8 +2098,9 @@ function drawOver(W, halfH, idx){
    1画面分の描画
    ========================================================= */
 function renderHalf(idx, W, halfH){
-  const p = P[idx];
+  const p = P[idx] || P[0];
   drawSky(W, halfH, p.camX);
+
   ctx.save();
   ctx.scale(scale, scale);
   ctx.translate(-p.camX, -CAM_Y);
@@ -1912,7 +2111,8 @@ function renderHalf(idx, W, halfH){
     drawOppIndicator(idx, W, halfH, p.camX);
     drawHUD(idx, W, halfH);
   }
-  if (gameState === 'menu') drawMenu(W, halfH, idx);
+  if (gameState === 'menu') drawMenu(W, halfH);
+  else if (gameState === 'charSelect') drawCharSelect(W, halfH, idx);
   else if (gameState === 'paused') drawPaused(W, halfH);
   else if (gameState === 'over') drawOver(W, halfH, idx);
 }
@@ -1946,7 +2146,6 @@ function render(){
   renderHalf(1, W, halfH);
   ctx.restore();
 
-  // 中央の仕切り
   ctx.setTransform(1,0,0,1,0,0);
   const dg = ctx.createLinearGradient(0, halfH-7, 0, halfH+7);
   dg.addColorStop(0,   'rgba(0,0,0,0)');
@@ -1972,7 +2171,7 @@ function pointInRect(px, py, r){
 }
 function handleCanvasTap(sx, sy){
   const W = cv.width, halfH = cv.height/2;
-  const {hx, hy} = screenToHalfLocal(sx, sy);
+  const {idx, hx, hy} = screenToHalfLocal(sx, sy);
 
   if (gameState === 'menu'){
     const rects = getModeButtons(W, halfH);
@@ -1982,8 +2181,20 @@ function handleCanvasTap(sx, sy){
         return;
       }
     }
+  } else if (gameState === 'charSelect'){
+    const cells = getCharGridLayout(W, halfH);
+    for (let i=0; i<cells.length; i++){
+      if (i >= CHARACTERS.length) break;
+      if (pointInRect(hx, hy, cells[i])){
+        // すでに選択済みなら変更不可
+        if (charSelected[idx] === null){
+          charSelected[idx] = i;
+          sfx('select');
+        }
+        return;
+      }
+    }
   } else if (gameState === 'playing'){
-    // 一時停止ボタン
     const pad = Math.round(halfH * 0.042);
     const fs  = Math.round(halfH * 0.055);
     const ch  = Math.round(fs * 1.75);
@@ -2014,19 +2225,40 @@ cv.addEventListener('pointerdown', e => {
 }, true);
 
 /* =========================================================
-   モード選択
+   状態遷移
    ========================================================= */
 function selectMode(m){
   mode = m;
-  restart();
+  charSelected = [null, null];
+  charSelectTimer = 0;
+  gameState = 'charSelect';
 }
 
-/* =========================================================
-   リスタート
-   ========================================================= */
-function restart(){
+function startGame(){
   generateLevel();
-  P = [ makePlayer(0), makePlayer(1) ];
+  const c0 = CHARACTERS[charSelected[0]] || CHARACTERS[0];
+  const c1 = CHARACTERS[charSelected[1]] || CHARACTERS[1];
+  P = [ makePlayer(0, c0), makePlayer(1, c1) ];
+  input[0].left = input[0].right = input[0].jumpHeld = false;
+  input[1].left = input[1].right = input[1].jumpHeld = false;
+  input[0].jumpBuffer = input[1].jumpBuffer = 0;
+  gameState = 'playing';
+  gameTime = 0;
+  winnerIdx = -1;
+  particles = [];
+  popups = [];
+  if (audioInited && audioCtx){
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    startBGM();
+  }
+}
+
+function restart(){
+  // 同じキャラクターでもう一度
+  generateLevel();
+  const c0 = CHARACTERS[charSelected[0]] || CHARACTERS[0];
+  const c1 = CHARACTERS[charSelected[1]] || CHARACTERS[1];
+  P = [ makePlayer(0, c0), makePlayer(1, c1) ];
   input[0].left = input[0].right = input[0].jumpHeld = false;
   input[1].left = input[1].right = input[1].jumpHeld = false;
   input[0].jumpBuffer = input[1].jumpBuffer = 0;
@@ -2073,7 +2305,7 @@ document.addEventListener('visibilitychange', () => {
    ========================================================= */
 resize();
 generateLevel();
-P = [ makePlayer(0), makePlayer(1) ];
+P = [ makePlayer(0, CHARACTERS[0]), makePlayer(1, CHARACTERS[1]) ];
 gameState = 'menu';
 updateControlsVisibility();
 requestAnimationFrame(loop);

@@ -98,7 +98,9 @@ const MAX_FALL     = 1350;
 const MAX_VX       = 252;
 
 const SMALL_W = 28, SMALL_H = 40;
-const GROWTH_STEP = 0.22;   // 1段階あたりの拡大率
+const GROWTH_STEP = 0.22;
+
+const POPUP_MIN_Y = CAM_Y + 55;  // 画面上端の余白
 
 let scale = 1;
 let viewW = 960;
@@ -138,11 +140,10 @@ const FOODS = [
   '🍨','🍰','🍩','🍪','🍫','🍬','🍭','🍿','☕','🧋'
 ];
 
-// 食べ物サイズ段階：小/中/大
 const FOOD_TIERS = [
-  { scale: 1.00, growth: 1, points: 200, weight: 0.55 },
-  { scale: 1.35, growth: 2, points: 400, weight: 0.30 },
-  { scale: 1.75, growth: 3, points: 700, weight: 0.15 }
+  { scale: 1.00, growth: 1, points: 200 },
+  { scale: 1.35, growth: 2, points: 400 },
+  { scale: 1.75, growth: 3, points: 700 }
 ];
 function pickFoodTier(){
   const r = Math.random();
@@ -151,11 +152,10 @@ function pickFoodTier(){
   return FOOD_TIERS[0];
 }
 
-// コインサイズ段階
 const COIN_TIERS = [
-  { r: 8,  points: 30,  weight: 0.70 },
-  { r: 11, points: 50,  weight: 0.22 },
-  { r: 15, points: 100, weight: 0.08 }
+  { r: 8,  points: 30 },
+  { r: 11, points: 50 },
+  { r: 15, points: 100 }
 ];
 function pickCoinTier(){
   const r = Math.random();
@@ -230,6 +230,10 @@ function starPath(c, cx, cy, outerR, innerR, points){
 function playerSize(growth){
   const s = 1 + growth * GROWTH_STEP;
   return { w: SMALL_W * s, h: SMALL_H * s };
+}
+/* キャラクター名（実況用） */
+function speakerName(p){
+  return p.charName + 'さん';
 }
 
 /* =========================================================
@@ -318,8 +322,6 @@ function sfx(type){
       [523,392,330,262,196].forEach((f,i)=> playTone(f, t+i*0.09, 0.22, 'triangle', 0.24)); break;
   }
 }
-
-/* ゴールファンファーレ */
 function playGoalMelody(){
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
@@ -493,91 +495,130 @@ function stopBGM(){
 }
 
 /* =========================================================
-   音声合成（実況）
+   音声合成（実況）— iPad/iPhone 対応強化版
    ========================================================= */
-let speechReady = false;
-let speechQueue = [];
-let lastSpeechAt = 0;
+let speechWarmedUp = false;
+let jaVoice = null;
+let lastSpeakTime = 0;
+let lastUtterance = null; // GC 防止
+let pendingSpeak = null;
 
-function initSpeech(){
-  if (!window.speechSynthesis) return;
-  window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged = () => {
-    window.speechSynthesis.getVoices();
-    speechReady = true;
-  };
-  // すでに読み込まれている場合
-  if (window.speechSynthesis.getVoices().length > 0) speechReady = true;
-}
-initSpeech();
-
-function getJaVoice(){
+function pickJaVoice(){
   if (!window.speechSynthesis) return null;
   const vs = window.speechSynthesis.getVoices();
-  return vs.find(v => v.lang === 'ja-JP') ||
-         vs.find(v => v.lang && v.lang.startsWith('ja')) || null;
+  if (!vs || vs.length === 0) return null;
+  // 優先順位: ja-JP のローカル音声 > ja-JP > ja で始まる
+  let v = vs.find(x => x.lang === 'ja-JP' && x.localService);
+  if (v) return v;
+  v = vs.find(x => x.lang === 'ja-JP');
+  if (v) return v;
+  v = vs.find(x => x.lang && x.lang.toLowerCase().startsWith('ja'));
+  if (v) return v;
+  return null;
+}
+
+function refreshVoices(){
+  if (!window.speechSynthesis) return;
+  jaVoice = pickJaVoice();
+  // voiceschanged 後に強制的に読み込み完了を待つ
+  if (!jaVoice){
+    // 稀に非同期で読み込まれるので再取得をスケジュール
+    setTimeout(() => { jaVoice = pickJaVoice(); }, 200);
+    setTimeout(() => { jaVoice = pickJaVoice(); }, 800);
+  }
+}
+
+if (window.speechSynthesis){
+  refreshVoices();
+  window.speechSynthesis.onvoiceschanged = refreshVoices;
+  // ページ読み込み直後にも何度かトライ
+  setTimeout(refreshVoices, 100);
+  setTimeout(refreshVoices, 500);
+  setTimeout(refreshVoices, 1500);
+}
+
+/* 初回ユーザージェスチャで音声を有効化（iOS必須） */
+function warmupSpeech(){
+  if (!window.speechSynthesis) return;
+  if (speechWarmedUp) return;
+  speechWarmedUp = true;
+  try {
+    // 短い無音発話でアンロック
+    const u = new SpeechSynthesisUtterance(' ');
+    u.lang = 'ja-JP';
+    u.volume = 0;
+    u.rate = 10;
+    u.pitch = 1;
+    const v = pickJaVoice();
+    if (v) u.voice = v;
+    lastUtterance = u;
+    window.speechSynthesis.speak(u);
+    // 直後にキャンセルして無音を保証（無音なので影響なし）
+    setTimeout(() => {
+      try { window.speechSynthesis.cancel(); } catch(e){}
+      refreshVoices();
+    }, 60);
+  } catch(e){}
 }
 
 function speak(text, opts){
   if (!window.speechSynthesis) return;
+  if (!text) return;
   opts = opts || {};
+
   const now = performance.now();
 
-  // 割り込みは最優先
+  // 割り込み
   if (opts.interrupt){
     try { window.speechSynthesis.cancel(); } catch(e){}
-    speechQueue = [];
-  } else {
-    // 直近の連続発話を抑制
-    if (now - lastSpeechAt < (opts.minGap || 800)){
-      if (speechQueue.length < 3) speechQueue.push({text, opts, at: now});
-      return;
+    pendingSpeak = null;
+  } else if (window.speechSynthesis.speaking || window.speechSynthesis.pending){
+    // 話し中のときは短いセリフはスキップ、長いものは保留
+    if (text.length > 12 && !pendingSpeak){
+      pendingSpeak = { text, opts, at: now };
     }
-    if (window.speechSynthesis.speaking){
-      if (speechQueue.length < 3) speechQueue.push({text, opts, at: now});
-      return;
-    }
+    return;
+  } else if (now - lastSpeakTime < (opts.minGap || 700)){
+    return;
   }
 
-  lastSpeechAt = now;
+  actuallySpeak(text, opts);
+}
+
+function actuallySpeak(text, opts){
   try {
     if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+    if (!jaVoice) refreshVoices();
+
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'ja-JP';
-    const v = getJaVoice();
-    if (v) u.voice = v;
-    u.rate = opts.rate || 1.25;
-    u.pitch = opts.pitch || 1.05;
-    u.volume = opts.volume || 1.0;
+    if (jaVoice) u.voice = jaVoice;
+    u.rate  = opts.rate  || 1.28;
+    u.pitch = opts.pitch || 1.08;
+    u.volume = 1.0;
+
+    u.onstart = () => { lastSpeakTime = performance.now(); };
+    u.onerror = (e) => {
+      // エラー時は軽くログ（無視）
+    };
+
+    lastUtterance = u; // 参照保持
     window.speechSynthesis.speak(u);
+    lastSpeakTime = performance.now();
   } catch(e){}
 }
 
-// キュー処理
+// 保留中のセリフを定期的に再生
 setInterval(() => {
   if (!window.speechSynthesis) return;
-  if (window.speechSynthesis.speaking) return;
-  if (speechQueue.length === 0) return;
-  const item = speechQueue.shift();
+  if (window.speechSynthesis.speaking || window.speechSynthesis.pending) return;
+  if (!pendingSpeak) return;
   const now = performance.now();
-  if (now - item.at > 2000) return; // 古すぎるものは破棄
-  lastSpeechAt = now;
-  try {
-    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
-    const u = new SpeechSynthesisUtterance(item.text);
-    u.lang = 'ja-JP';
-    const v = getJaVoice();
-    if (v) u.voice = v;
-    u.rate = item.opts.rate || 1.25;
-    u.pitch = item.opts.pitch || 1.05;
-    u.volume = 1.0;
-    window.speechSynthesis.speak(u);
-  } catch(e){}
+  if (now - pendingSpeak.at > 2500){ pendingSpeak = null; return; }
+  const item = pendingSpeak;
+  pendingSpeak = null;
+  actuallySpeak(item.text, item.opts);
 }, 260);
-
-function playerLabel(p){
-  return p.idx === 0 ? 'プレイヤー1' : 'プレイヤー2';
-}
 
 /* =========================================================
    レベル生成
@@ -604,8 +645,6 @@ function generateLevel(){
     }
     return true;
   }
-
-  // コイン生成ヘルパー（サイズランダム）
   function makeCoin(x, y){
     const tier = pickCoinTier();
     return { x, y, r: tier.r, points: tier.points, taken:false,
@@ -622,7 +661,6 @@ function generateLevel(){
     const sx   = x + gap;
     solids.push({x:sx, y:GROUND_Y, w:segW, h:220, ground:true});
 
-    // 敵
     const nE = segW > 470 ? 2 : 1;
     for (let i=0;i<nE;i++){
       const et = ENEMY_TYPES[rndI(0, ENEMY_TYPES.length-1)];
@@ -638,7 +676,6 @@ function generateLevel(){
       });
     }
 
-    // 浮遊足場
     if (Math.random() < 0.82){
       const pw = rnd(90,160);
       const px = sx + 30 + Math.random()*Math.max(1, segW - pw - 60);
@@ -656,7 +693,6 @@ function generateLevel(){
       }
     }
 
-    // はてなブロック
     if (segW > 320 && Math.random() < 0.85){
       const nB = rndI(1,3);
       const bw = 32, bh = 32;
@@ -690,7 +726,6 @@ function generateLevel(){
       }
     }
 
-    // 地上コイン
     const nc = rndI(2,4);
     for (let i=0;i<nc;i++){
       for (let tryN=0; tryN<6; tryN++){
@@ -704,7 +739,6 @@ function generateLevel(){
       }
     }
 
-    // 穴の上の足場
     if (gap > 122 && Math.random() < 0.62){
       const gw = rnd(70,100);
       const gx = x + gap/2 - gw/2;
@@ -812,6 +846,7 @@ document.querySelectorAll('.btn').forEach(btn => {
   const down = e => {
     e.preventDefault();
     ensureAudio();
+    warmupSpeech();
     btn.classList.add('active');
     if (k === 'left')  input[pi].left  = true;
     if (k === 'right') input[pi].right = true;
@@ -837,6 +872,7 @@ document.querySelectorAll('.btn').forEach(btn => {
 window.addEventListener('keydown', e=>{
   const k = e.key;
   if (e.repeat) return;
+  warmupSpeech();
   if (k==='ArrowLeft')  input[0].left  = true;
   if (k==='ArrowRight') input[0].right = true;
   if (k==='ArrowUp' || k===' '){ input[0].jumpBuffer=0.15; input[0].jumpHeld=true; e.preventDefault(); }
@@ -882,11 +918,13 @@ function updateParticles(dt){
 }
 function showPoints(x, y, text, color, opts){
   opts = opts || {};
+  // 画面上端を超えないよう Y をクランプ
+  let cy = Math.max(POPUP_MIN_Y, Math.min(y, GROUND_Y - 20));
   popups.push({
-    x, y, text, color: color || '#ffd23f',
-    life: opts.big ? 1.9 : 1.15,
-    maxLife: opts.big ? 1.9 : 1.15,
-    vy: opts.big ? -55 : -90,
+    x, y: cy, text, color: color || '#ffd23f',
+    life: opts.big ? 2.1 : 1.15,
+    maxLife: opts.big ? 2.1 : 1.15,
+    vy: opts.big ? -32 : -90,
     big: !!opts.big
   });
 }
@@ -899,7 +937,7 @@ function updatePopups(dt){
 }
 function drawPopup(pp){
   const k = clamp(pp.life / pp.maxLife, 0, 1);
-  const alpha = k > 0.8 ? (1 - k) * 5 : Math.min(1, k * 2.5);
+  const alpha = k > 0.85 ? (1 - k) * 6.6 : Math.min(1, k * 2.2);
   const fontSize = pp.big ? 34 : 24;
   ctx.save();
   ctx.globalAlpha = clamp(alpha, 0, 1);
@@ -908,7 +946,7 @@ function drawPopup(pp){
   ctx.textBaseline = 'middle';
   ctx.lineWidth = pp.big ? 7 : 5;
   ctx.lineJoin = 'round';
-  ctx.strokeStyle = 'rgba(0,0,0,0.78)';
+  ctx.strokeStyle = 'rgba(0,0,0,0.8)';
   ctx.strokeText(pp.text, pp.x, pp.y);
   ctx.fillStyle = pp.color;
   ctx.fillText(pp.text, pp.x, pp.y);
@@ -929,10 +967,8 @@ function spawnBlockContents(s, p){
       w: fw, h: fw,
       vx: 85, vy: 0,
       onGround: false,
-      emoji: f,
-      scale: tier.scale,
-      growth: tier.growth,
-      points: tier.points
+      emoji: f, scale: tier.scale,
+      growth: tier.growth, points: tier.points
     });
     sfx('emerge');
   } else {
@@ -967,15 +1003,13 @@ function triggerBlock(s, p){
   }
 
   sfx('block');
-  // 内容物を出す（最後のヒット以外）
   spawnBlockContents(s, p);
 }
 
 /* =========================================================
-   安全位置の判定
+   安全位置判定
    ========================================================= */
 function isValidSafeSpot(x, feetY, w){
-  // 中心がソリッドの上にあり、足がその天面に近いこと
   const cx = x + w/2;
   for (const s of solids){
     if (s.breaking) continue;
@@ -997,12 +1031,12 @@ function killPlayer(p, fromPit){
     const deduction = 150;
     const actual = Math.min(p.score, deduction);
     p.score -= actual;
-    if (actual > 0) showPoints(p.safeX + 14, GROUND_Y - 50, '-' + actual, '#ff5555');
+    if (actual > 0) showPoints(p.safeX + 14, POPUP_MIN_Y, '-' + actual, '#ff5555');
     sfx('fall');
-    speak(playerLabel(p) + '、穴に落ちた！', {minGap: 1400});
+    speak(speakerName(p) + '、穴に落ちた！', {minGap: 1400, rate: 1.3});
   } else {
     sfx('die');
-    speak(playerLabel(p) + '、やられた！', {minGap: 1400});
+    speak(speakerName(p) + '、やられた！', {minGap: 1400, rate: 1.3});
   }
   if (p.y < 620) p.vy = -470; else p.vy = 0;
   p.vx = 0;
@@ -1053,14 +1087,11 @@ function updatePlayer(p, dt){
       p.growth = 0;
       const sz = playerSize(0);
       p.w = sz.w; p.h = sz.h;
-      // 有効なセーフ位置かチェック、無効なら初期位置にフォールバック
       let sx = p.safeX, sy = p.safeFeetY;
       if (!isValidSafeSpot(sx, sy, sz.w)){
-        // 探す：近くの地面
         sx = 60 + p.idx*54;
         sy = GROUND_Y;
         if (!isValidSafeSpot(sx, sy, sz.w)){
-          // 最終手段：レベル先頭
           sx = 60; sy = GROUND_Y;
         }
       }
@@ -1131,7 +1162,6 @@ function updatePlayer(p, dt){
 
   if (p.onGround){
     p.coyote = 0.1;
-    // 端から十分離れている時のみセーフ位置を更新
     const cx = p.x + p.w/2;
     for (const s of solids){
       if (s.breaking) continue;
@@ -1191,14 +1221,13 @@ function updatePowerups(dt){
         const gain = m.points;
         p.score += gain;
         p.foodsEaten.push({emoji: m.emoji, scale: m.scale});
-        if (m.scale >= 1.5) sfx('bigeat');
-        else sfx('eat');
+        if (m.scale >= 1.5) sfx('bigeat'); else sfx('eat');
         spawnParticles(m.x+m.w/2, m.y+m.h/2, '#ffae42', 16, 230);
         showPoints(p.x + p.w/2, p.y - 20, '+' + gain, '#ffae42', {big: m.scale >= 1.5});
         if (m.scale >= 1.5){
-          speak(playerLabel(p) + '、でっかいの食べた！', {minGap: 1600});
+          speak(speakerName(p) + '、おっきいのたべた！', {minGap: 2000, rate: 1.3});
         } else {
-          speak(playerLabel(p) + '、たべた！', {minGap: 2400});
+          speak(speakerName(p) + '、たべた！', {minGap: 2600, rate: 1.3});
         }
         powerups.splice(i,1);
         break;
@@ -1240,7 +1269,7 @@ function updateEnemies(dt){
           sfx('stomp');
           spawnParticles(e.x+e.w/2, e.y+e.h/2, '#c98a4b', 12, 210);
           showPoints(p.x + p.w/2, p.y - 20, '+' + gain, '#5ee36a');
-          speak(playerLabel(p) + '、ふみふみ！', {minGap: 1500});
+          speak(speakerName(p) + '、ふみふみ！', {minGap: 1800, rate: 1.3});
         } else if (p.invuln <= 0){
           if (p.growth > 0){
             applyGrowth(p, -1);
@@ -1251,7 +1280,7 @@ function updateEnemies(dt){
             sfx('shrink');
             spawnParticles(p.x+p.w/2, p.y+p.h/2, '#ffd23f', 14, 240);
             showPoints(p.x + p.w/2, p.y - 20, '-50', '#ff9a9a');
-            speak(playerLabel(p) + '、ちっちゃくなった！', {minGap: 1800});
+            speak(speakerName(p) + '、ちっちゃくなった！', {minGap: 2000, rate: 1.3});
           } else {
             killPlayer(p, false);
           }
@@ -1321,33 +1350,36 @@ function checkGoal(){
       p.finishTime = p.raceTime;
 
       playGoalMelody();
-      speak('ゴール！' + playerLabel(p) + 'がゴール！', {interrupt: true, rate: 1.3});
+      speak(speakerName(p) + 'がゴール！', {interrupt: true, rate: 1.3});
 
-      // ゴールポイントとサイズボーナスを表示
-      showPoints(p.x + p.w/2, p.y - 40, '+' + goalScore + ' ゴール', '#ffd23f', {big:true});
-      setTimeout(() => {
-        if (p.growth > 0) {
-          const sizeBonus = Math.floor(p.growth * 150);
-          p.sizeBonus = sizeBonus;
-          p.score += sizeBonus;
-          showPoints(p.x + p.w/2, p.y - 62, '+' + sizeBonus + ' サイズ', '#ffae42', {big:true});
-        }
-      }, 500);
+      // ゴールポイントは常に画面上部付近に表示
+      showPoints(p.x + p.w/2, POPUP_MIN_Y, '+' + goalScore + ' ゴール', '#ffd23f', {big:true});
+
+      // サイズボーナスを 1.0 秒後に表示
+      const sizeBonus = Math.floor(p.growth * 150);
+      if (sizeBonus > 0){
+        p.sizeBonus = sizeBonus;
+        p.score += sizeBonus;
+        setTimeout(() => {
+          showPoints(p.x + p.w/2, POPUP_MIN_Y + 45, '+' + sizeBonus + ' サイズ', '#ffae42', {big:true});
+          speak(speakerName(p) + '、サイズボーナス' + sizeBonus + 'ポイント！', {rate:1.3, minGap:500});
+        }, 1000);
+      }
 
       for (let i=0;i<70;i++){
         spawnParticles(GOAL_X + rnd(-70,70), 200 + rnd(-90,90),
           ['#ffd23f','#5ee36a','#ffffff','#ff8fd0'][i%4], 1, 340);
       }
 
-      // 少し待ってから終了（サイズボーナス表示のため）
-      setTimeout(() => endGame(p), 1600);
+      // サイズボーナス表示のため 2.5 秒後に終了
+      setTimeout(() => endGame(p), 2500);
       return;
     }
   }
 }
 
 function applySizeBonusTo(p){
-  if (p.sizeBonus > 0) return; // すでに付与済み
+  if (p.sizeBonus > 0) return;
   const b = Math.floor(p.growth * 150);
   if (b > 0){
     p.sizeBonus = b;
@@ -1357,22 +1389,20 @@ function applySizeBonusTo(p){
 
 function endGame(winnerP){
   if (gameState !== 'playing') return;
-  // 両者にサイズボーナス（まだの場合は付与）
   for (const p of P) applySizeBonusTo(p);
 
   gameState = 'over';
   gameOverAt = gameTime;
   winnerIdx = winnerP ? winnerP.idx : -1;
 
-  // 最終勝者を発表
   const finalWinner = computeWinner();
   setTimeout(() => {
     if (finalWinner === -1){
-      speak('ゲーム終了。ひきわけです！', {interrupt:true, rate:1.25});
+      speak('ゲーム終了。ひきわけです！', {interrupt:true, rate:1.28});
     } else {
-      speak('ゲーム終了。勝者は、' + playerLabel(P[finalWinner]) + '！', {interrupt:true, rate:1.25});
+      speak('ゲーム終了。勝者は、' + speakerName(P[finalWinner]) + '！', {interrupt:true, rate:1.28});
     }
-  }, 800);
+  }, 900);
 }
 
 function computeWinner(){
@@ -1409,6 +1439,7 @@ function resumeGame(){
 function quitToMenu(){
   gameState = 'menu';
   winnerIdx = -1;
+  try { window.speechSynthesis.cancel(); } catch(e){}
   if (audioInited && audioCtx){
     if (audioCtx.state === 'suspended') audioCtx.resume();
     startBGM();
@@ -1440,7 +1471,6 @@ function update(dt){
     }
   }
 
-  // ブロック関連：バウンス・破壊の更新
   for (let i=solids.length-1;i>=0;i--){
     const s = solids[i];
     if (s.bounceT > 0) s.bounceT = Math.max(0, s.bounceT - dt);
@@ -1572,16 +1602,14 @@ function drawBlock(s){
   }
   let x = s.x, y = s.y + yOff, w = s.w, h = s.h;
   let alpha = 1;
-  let rot = 0;
 
   if (s.breaking){
     const k = 1 - s.breakT/0.45;
     alpha = 1 - k;
     y += k * 30;
-    rot = k * 0.6;
     ctx.save();
     ctx.translate(x + w/2, y + h/2);
-    ctx.rotate(rot);
+    ctx.rotate(k * 0.6);
     ctx.translate(-(x + w/2), -(y + h/2));
     ctx.globalAlpha = alpha;
   }
@@ -1605,14 +1633,12 @@ function drawBlock(s){
     ctx.fillRect(x+w-6, y+3, 3, 3);
     ctx.fillRect(x+3, y+h-6, 3, 3);
     ctx.fillRect(x+w-6, y+h-6, 3, 3);
-    // 残りヒット数を小さく表示
     const remain = s.maxHits - (s.hits||0);
     ctx.fillStyle = '#7a4500';
     ctx.font = 'bold ' + Math.round(h*0.74) + 'px -apple-system,"Hiragino Sans",sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('?', x + w/2, y + h/2 + 1);
-    // 残り回数を右上に
     if (remain < s.maxHits){
       ctx.font = '900 ' + Math.round(h*0.38) + 'px -apple-system,sans-serif';
       ctx.fillStyle = '#7a4500';
@@ -1665,7 +1691,6 @@ function drawGoal(){
   ctx.fill();
 }
 
-/* コイン（サイズ対応） */
 function drawCoin(c){
   const bob = c.pop ? 0 : Math.sin(time*3 + c.phase) * 4;
   const flipPhase = time*3.4 + c.phase;
@@ -1702,7 +1727,6 @@ function drawCoin(c){
   ctx.beginPath();
   ctx.ellipse(-r*0.35, -r*0.38, r*0.22, r*0.14, -0.5, 0, Math.PI*2);
   ctx.fill();
-
   ctx.restore();
 }
 
@@ -1722,14 +1746,6 @@ function drawFood(m){
     ctx.fillStyle = 'rgba(255,240,140,' + pulse + ')';
     ctx.beginPath(); ctx.arc(cx, cy, m.w*0.78, 0, Math.PI*2); ctx.fill();
   }
-
-  const tw = 0.45 + Math.sin(time*6 + m.x*0.03)*0.35;
-  ctx.save();
-  ctx.globalAlpha = tw;
-  ctx.fillStyle = 'rgba(255,255,220,0.9)';
-  ctx.beginPath(); ctx.arc(cx + m.w*0.55, cy - m.h*0.35, 2.2, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(cx - m.w*0.6, cy - m.h*0.05, 1.7, 0, Math.PI*2); ctx.fill();
-  ctx.restore();
 
   const size = m.w * 1.35;
   ctx.font = size + 'px ' + EMOJI_FONT;
@@ -1769,7 +1785,6 @@ function drawEnemy(e){
 function drawPlayer(p){
   const x = p.x, y = p.y, w = p.w, h = p.h;
 
-  // 影：地面に固定
   const shadowY = findShadowSurfaceY(p);
   if (shadowY !== Infinity){
     const feetY = y + h;
@@ -2165,21 +2180,21 @@ function drawPaused(W, halfH){
 }
 
 /* =========================================================
-   結果画面（キャラ・食べ物・踏んだ敵をサイズ付きで表示）
+   結果画面（横スペースを活かした新レイアウト）
    ========================================================= */
 function getOverButtons(W, halfH){
-  const bw = W*0.42, bh = halfH*0.10;
+  const bw = W*0.28, bh = halfH*0.10;
   const gap = W*0.04;
   const totalW = bw*2 + gap;
   const bx = (W - totalW) / 2;
-  const by = halfH*0.86;
+  const by = halfH*0.87;
   return {
     replay: {x:bx, y:by, w:bw, h:bh},
     menu:   {x:bx + bw + gap, y:by, w:bw, h:bh}
   };
 }
 function drawOver(W, halfH, idx){
-  ctx.fillStyle = 'rgba(6,10,20,0.86)';
+  ctx.fillStyle = 'rgba(6,10,20,0.88)';
   ctx.fillRect(0, 0, W, halfH);
   const p = P[idx];
   const isWin = winnerIdx === idx;
@@ -2189,135 +2204,173 @@ function drawOver(W, halfH, idx){
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  // WIN / LOSE / DRAW
-  const fs1 = Math.round(halfH*0.10);
+  /* ===== ヘッダー：WIN/LOSE + モード ===== */
+  const fs1 = Math.round(halfH*0.11);
   ctx.font = '900 ' + fs1 + 'px -apple-system,"Hiragino Sans",sans-serif';
+  const headerY = halfH*0.08;
   if (isDraw){
     ctx.fillStyle = 'rgba(220,220,220,0.35)';
-    ctx.fillText('DRAW', W/2 + 3, halfH*0.10 + 4);
+    ctx.fillText('DRAW', W/2 + 3, headerY + 4);
     ctx.fillStyle = '#e6e6e6';
-    ctx.fillText('DRAW', W/2, halfH*0.10);
+    ctx.fillText('DRAW', W/2, headerY);
   } else if (isWin){
     ctx.fillStyle = 'rgba(255,210,63,0.35)';
-    ctx.fillText('WIN!', W/2 + 3, halfH*0.10 + 4);
+    ctx.fillText('WIN!', W/2 + 3, headerY + 4);
     ctx.fillStyle = '#ffd23f';
-    ctx.fillText('WIN!', W/2, halfH*0.10);
+    ctx.fillText('WIN!', W/2, headerY);
   } else {
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillText('LOSE...', W/2, halfH*0.10);
+    ctx.fillText('LOSE...', W/2, headerY);
   }
+  ctx.font = '700 ' + Math.round(halfH*0.034) + 'px -apple-system,sans-serif';
+  ctx.fillStyle = 'rgba(255,210,63,0.85)';
+  ctx.fillText(MODE_ICONS[mode] + ' ' + MODE_LABELS[mode], W/2, halfH*0.155);
 
-  // モード
-  const fsm = Math.round(halfH*0.036);
-  ctx.font = '700 ' + fsm + 'px -apple-system,sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,0.75)';
-  ctx.fillText(MODE_ICONS[mode] + ' ' + MODE_LABELS[mode], W/2, halfH*0.185);
+  /* ===== ボディ：キャラクター（左）＋ 統計（右） ===== */
+  const bodyTop = halfH * 0.19;
+  const bodyBottom = halfH * 0.55;
+  const bodyH = bodyBottom - bodyTop;
 
-  // ステータス
-  const fss = Math.round(halfH*0.034);
-  ctx.font = '800 ' + fss + 'px -apple-system,sans-serif';
-  const lines = [
-    'ポイント ' + p.score,
-    'コイン   ' + p.coins,
-    'フミフミ ' + p.stomps,
-    'タイム   ' + (p.finished ? p.finishTime.toFixed(1) + '秒' : '---')
-  ];
-  for (let i=0;i<lines.length;i++){
-    const highlight = (mode === 'points' && i === 0) ||
-                      (mode === 'coins' && i === 1) ||
-                      (mode === 'stomps' && i === 2) ||
-                      (mode === 'time' && i === 3);
-    ctx.fillStyle = highlight ? '#ffd23f' : 'rgba(255,255,255,0.85)';
-    ctx.fillText(lines[i], W/2, halfH*0.245 + i*(fss*1.28));
-  }
-
-  // ===== キャラクターをゴール時の大きさで表示 =====
+  // キャラクター
+  const charX = W * 0.13;
+  const charY = bodyTop + bodyH * 0.42;
   const finalScale = 1 + p.growth * GROWTH_STEP;
-  const charDisplaySize = Math.min(halfH*0.20, halfH*0.075 * finalScale);
-  const charY = halfH*0.47;
-  ctx.save();
-  // 拡大表示用の円背景
-  ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  ctx.beginPath(); ctx.arc(W*0.18, charY, charDisplaySize*0.7, 0, Math.PI*2); ctx.fill();
+  const charDisplaySize = Math.min(bodyH * 0.55, W * 0.085);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.beginPath(); ctx.arc(charX, charY, charDisplaySize * 0.72, 0, Math.PI*2); ctx.fill();
   ctx.strokeStyle = p.main;
-  ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.arc(W*0.18, charY, charDisplaySize*0.7, 0, Math.PI*2); ctx.stroke();
+  ctx.lineWidth = 3.5;
+  ctx.beginPath(); ctx.arc(charX, charY, charDisplaySize * 0.72, 0, Math.PI*2); ctx.stroke();
   ctx.font = charDisplaySize + 'px ' + EMOJI_FONT;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(p.charEmoji, W*0.18, charY);
-  ctx.restore();
+  ctx.fillText(p.charEmoji, charX, charY);
 
-  // サイズ表記
-  ctx.font = '900 ' + Math.round(halfH*0.034) + 'px -apple-system,sans-serif';
+  // サイズテキスト
+  ctx.font = '900 ' + Math.round(halfH*0.033) + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.fillStyle = '#ffae42';
-  ctx.textAlign = 'center';
-  ctx.fillText('SIZE x' + finalScale.toFixed(1), W*0.18, charY + charDisplaySize*0.75);
+  ctx.fillText('SIZE ×' + finalScale.toFixed(1), charX, charY + charDisplaySize * 0.98);
   if (p.sizeBonus > 0){
-    ctx.font = '800 ' + Math.round(halfH*0.026) + 'px -apple-system,sans-serif';
-    ctx.fillStyle = 'rgba(255,174,66,0.9)';
-    ctx.fillText('+' + p.sizeBonus, W*0.18, charY + charDisplaySize*0.75 + halfH*0.036);
+    ctx.font = '800 ' + Math.round(halfH*0.027) + 'px -apple-system,sans-serif';
+    ctx.fillStyle = 'rgba(255,174,66,0.95)';
+    ctx.fillText('+' + p.sizeBonus + 'pt', charX, charY + charDisplaySize * 0.98 + halfH*0.042);
   }
 
-  // ===== 食べたもの =====
-  const foods = p.foodsEaten;
-  const colR = W*0.42;   // 中央の列 x
-  const foodsTitleY = halfH*0.395;
-  ctx.font = '800 ' + Math.round(halfH*0.028) + 'px -apple-system,"Hiragino Sans",sans-serif';
+  // 統計（右側：2×2グリッド）
+  const statLabelColor = 'rgba(255,255,255,0.72)';
+  const statFontLabel = Math.round(halfH * 0.032);
+  const statFontValue = Math.round(halfH * 0.052);
+
+  const col1X = W * 0.30;
+  const col2X = W * 0.62;
+  const rowY1 = bodyTop + bodyH * 0.22;
+  const rowY2 = bodyTop + bodyH * 0.68;
+  const valOffset = W * 0.14;
+
+  // ポイント
+  const isPointsMode = (mode === 'points');
+  ctx.font = '800 ' + statFontLabel + 'px -apple-system,"Hiragino Sans",sans-serif';
+  ctx.fillStyle = isPointsMode ? 'rgba(255,210,63,0.95)' : statLabelColor;
+  ctx.textAlign = 'left';
+  ctx.fillText('★ ポイント', col1X, rowY1);
+  ctx.font = '900 ' + statFontValue + 'px -apple-system,sans-serif';
+  ctx.fillStyle = isPointsMode ? '#ffd23f' : '#fff';
+  ctx.fillText(p.score + 'pt', col1X + valOffset, rowY1);
+
+  // コイン
+  const isCoinsMode = (mode === 'coins');
+  ctx.font = '800 ' + statFontLabel + 'px -apple-system,"Hiragino Sans",sans-serif';
+  ctx.fillStyle = isCoinsMode ? 'rgba(255,210,63,0.95)' : statLabelColor;
+  ctx.fillText('● コイン', col2X, rowY1);
+  ctx.font = '900 ' + statFontValue + 'px -apple-system,sans-serif';
+  ctx.fillStyle = isCoinsMode ? '#ffd23f' : '#fff';
+  ctx.fillText(p.coins + '枚', col2X + valOffset, rowY1);
+
+  // フミフミ
+  const isStompsMode = (mode === 'stomps');
+  ctx.font = '800 ' + statFontLabel + 'px -apple-system,"Hiragino Sans",sans-serif';
+  ctx.fillStyle = isStompsMode ? 'rgba(255,210,63,0.95)' : statLabelColor;
+  ctx.fillText('♟ フミフミ', col1X, rowY2);
+  ctx.font = '900 ' + statFontValue + 'px -apple-system,sans-serif';
+  ctx.fillStyle = isStompsMode ? '#ffd23f' : '#fff';
+  ctx.fillText(p.stomps + '回', col1X + valOffset, rowY2);
+
+  // タイム
+  const isTimeMode = (mode === 'time');
+  ctx.font = '800 ' + statFontLabel + 'px -apple-system,"Hiragino Sans",sans-serif';
+  ctx.fillStyle = isTimeMode ? 'rgba(255,210,63,0.95)' : statLabelColor;
+  ctx.fillText('⏱ タイム', col2X, rowY2);
+  ctx.font = '900 ' + statFontValue + 'px -apple-system,sans-serif';
+  ctx.fillStyle = isTimeMode ? '#ffd23f' : '#fff';
+  ctx.fillText((p.finished ? p.finishTime.toFixed(1) + 's' : '---'), col2X + valOffset, rowY2);
+
+  /* ===== 食べたものセクション ===== */
+  const foodY = halfH * 0.60;
+  const foodTitleW = W * 0.22;
+
+  // タイトル（左寄せ）
+  ctx.font = '900 ' + Math.round(halfH*0.032) + 'px -apple-system,"Hiragino Sans",sans-serif';
+  ctx.textAlign = 'left';
   ctx.fillStyle = 'rgba(255,174,66,0.95)';
-  ctx.textAlign = 'center';
-  ctx.fillText('たべたもの × ' + foods.length, colR, foodsTitleY);
+  ctx.fillText('たべたもの × ' + p.foodsEaten.length, W*0.04, foodY);
 
-  if (foods.length > 0){
-    const rowY = halfH*0.475;
-    const maxW = W*0.50;
-    const baseSize = halfH*0.034;
-    // 各要素の幅を計算
-    const sizes = foods.map(f => baseSize * f.scale);
+  // アイコン（右側の広いスペース）
+  if (p.foodsEaten.length > 0){
+    const iconsLeft = W * 0.24;
+    const iconsRight = W * 0.97;
+    const availW = iconsRight - iconsLeft;
+    const rowY = foodY;
+
+    // サイズ計算（大きめの絵文字）
+    const baseSize = halfH * 0.075;
+    const sizes = p.foodsEaten.map(f => baseSize * Math.min(f.scale, 1.6));
     let totalW = sizes.reduce((a,b)=>a+b, 0);
     let shrink = 1;
-    if (totalW > maxW) shrink = maxW / totalW;
-    const startX = colR - (totalW * shrink)/2;
-    let xCursor = startX;
-    for (let i=0; i<foods.length; i++){
+    if (totalW > availW) shrink = availW / totalW;
+
+    let xCursor = iconsLeft;
+    for (let i=0; i<p.foodsEaten.length; i++){
       const size = sizes[i] * shrink;
       ctx.font = size + 'px ' + EMOJI_FONT;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(foods[i].emoji, xCursor + size/2, rowY);
+      ctx.fillText(p.foodsEaten[i].emoji, xCursor + size/2, rowY);
       xCursor += size;
     }
   }
 
-  // ===== 踏んだ敵 =====
-  const stomped = p.stompedEnemies;
-  const stompTitleY = halfH*0.585;
-  ctx.font = '800 ' + Math.round(halfH*0.028) + 'px -apple-system,"Hiragino Sans",sans-serif';
+  /* ===== ふみふみセクション ===== */
+  const stompY = halfH * 0.72;
+
+  ctx.font = '900 ' + Math.round(halfH*0.032) + 'px -apple-system,"Hiragino Sans",sans-serif';
+  ctx.textAlign = 'left';
   ctx.fillStyle = 'rgba(94,227,106,0.95)';
-  ctx.textAlign = 'center';
-  ctx.fillText('ふみふみ × ' + stomped.length, colR, stompTitleY);
+  ctx.fillText('ふみふみ × ' + p.stompedEnemies.length, W*0.04, stompY);
 
-  if (stomped.length > 0){
-    const rowY = halfH*0.665;
-    const maxW = W*0.50;
-    const baseSize = halfH*0.034;
-    const sizes = stomped.map(s => baseSize * s.scale);
+  if (p.stompedEnemies.length > 0){
+    const iconsLeft = W * 0.24;
+    const iconsRight = W * 0.97;
+    const availW = iconsRight - iconsLeft;
+    const rowY = stompY;
+    const baseSize = halfH * 0.075;
+    const sizes = p.stompedEnemies.map(s => baseSize * Math.min(s.scale, 1.6));
     let totalW = sizes.reduce((a,b)=>a+b, 0);
     let shrink = 1;
-    if (totalW > maxW) shrink = maxW / totalW;
-    const startX = colR - (totalW * shrink)/2;
-    let xCursor = startX;
-    for (let i=0; i<stomped.length; i++){
+    if (totalW > availW) shrink = availW / totalW;
+
+    let xCursor = iconsLeft;
+    for (let i=0; i<p.stompedEnemies.length; i++){
       const size = sizes[i] * shrink;
       ctx.font = size + 'px ' + EMOJI_FONT;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(stomped[i].emoji, xCursor + size/2, rowY);
+      ctx.fillText(p.stompedEnemies[i].emoji, xCursor + size/2, rowY);
       xCursor += size;
     }
   }
 
-  // ボタン
+  /* ===== ボタン ===== */
   const btn = getOverButtons(W, halfH);
   let grad = ctx.createLinearGradient(btn.replay.x, btn.replay.y, btn.replay.x, btn.replay.y+btn.replay.h);
   grad.addColorStop(0, '#ffd94a'); grad.addColorStop(1, '#f5a623');
@@ -2325,6 +2378,8 @@ function drawOver(W, halfH, idx){
   roundRect(ctx, btn.replay.x, btn.replay.y, btn.replay.w, btn.replay.h, btn.replay.h*0.35); ctx.fill();
   ctx.fillStyle = '#5a3200';
   ctx.font = '900 ' + Math.round(btn.replay.h*0.42) + 'px -apple-system,"Hiragino Sans",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
   ctx.fillText('もういちど', btn.replay.x + btn.replay.w/2, btn.replay.y + btn.replay.h*0.55);
 
   grad = ctx.createLinearGradient(btn.menu.x, btn.menu.y, btn.menu.x, btn.menu.y+btn.menu.h);
@@ -2334,7 +2389,6 @@ function drawOver(W, halfH, idx){
   ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2.5;
   roundRect(ctx, btn.menu.x, btn.menu.y, btn.menu.w, btn.menu.h, btn.menu.h*0.35); ctx.stroke();
   ctx.fillStyle = '#fff';
-  ctx.font = '900 ' + Math.round(btn.menu.h*0.42) + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.fillText('もどる', btn.menu.x + btn.menu.w/2, btn.menu.y + btn.menu.h*0.55);
 
   ctx.restore();
@@ -2446,6 +2500,7 @@ function handleCanvasTap(sx, sy){
 }
 cv.addEventListener('pointerdown', e => {
   ensureAudio();
+  warmupSpeech();
   const rect = cv.getBoundingClientRect();
   const sx = (e.clientX - rect.left) * (cv.width / rect.width);
   const sy = (e.clientY - rect.top) * (cv.height / rect.height);
@@ -2479,7 +2534,7 @@ function startGame(){
     if (audioCtx.state === 'suspended') audioCtx.resume();
     startBGM();
   }
-  speak('対戦、スタート！', {interrupt:true, rate:1.3});
+  speak('たいせん、スタート！', {interrupt:true, rate:1.3});
 }
 
 function restart(){

@@ -105,13 +105,13 @@ const MAX_FALL     = 1350;
 const MAX_VX       = 252;
 
 const SMALL_W = 28, SMALL_H = 40;
-const BIG_W   = 32, BIG_H   = 56;
+const GROWTH_STEP = 0.09;   // 1個食べるごとのサイズ増加率
 
 let scale = 1;
 let viewW = 960;
 
 /* =========================================================
-   キャラクター & 敵リスト
+   キャラクター & 敵 & 食べ物
    ========================================================= */
 const CHARACTERS = [
   {e:'🦆', n:'アヒル'},
@@ -157,7 +157,8 @@ const CHARACTERS = [
   {e:'🦝', n:'アライグマ'},
   {e:'🦨', n:'スカンク'},
   {e:'🐿️', n:'リス'},
-  {e:'🦔', n:'ハリネズミ'}
+  {e:'🦔', n:'ハリネズミ'},
+  {e:'🗿', n:'モアイ'}
 ];
 
 const ENEMY_TYPES = [
@@ -172,7 +173,17 @@ const ENEMY_TYPES = [
   {e:'🚜', n:'トラクター'},
   {e:'🏍️', n:'バイク'},
   {e:'🛵', n:'スクーター'},
-  {e:'🚲', n:'自転車'}
+  {e:'🚲', n:'自転車'},
+  {e:'🚂', n:'蒸気機関車'}
+];
+
+const FOODS = [
+  '🍎','🍏','🍐','🍊','🍋','🍋‍🟩','🍌','🍉','🍇','🍓',
+  '🫐','🍈','🍒','🍑','🥭','🍍','🥥','🥝','🍅','🥑',
+  '🍆','🥔','🥕','🌽','🌶️','🥒','🥬','🥦','🧄','🧅',
+  '🍞','🥐','🧀','🥚','🍳','🥞','🧇','🥓','🍔','🍟',
+  '🍕','🌭','🍣','🍙','🍚','🍛','🍜','🍝','🍤','🍦',
+  '🍨','🍰','🍩','🍪','🍫','🍬','🍭','🍿','☕','🧋'
 ];
 
 const EMOJI_FONT = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","EmojiOne Color",sans-serif';
@@ -227,6 +238,10 @@ function starPath(c, cx, cy, outerR, innerR, points){
     if (i===0) c.moveTo(x,y); else c.lineTo(x,y);
   }
   c.closePath();
+}
+function playerSize(growth){
+  const s = 1 + growth * GROWTH_STEP;
+  return { w: SMALL_W * s, h: SMALL_H * s };
 }
 
 /* =========================================================
@@ -306,6 +321,9 @@ function sfx(type){
       break;
     case 'shrink':
       [880,660,440,330].forEach((f,i)=> playTone(f, t+i*0.05, 0.16, 'square', 0.22));
+      break;
+    case 'eat':
+      [660,880,1174].forEach((f,i)=> playTone(f, t+i*0.045, 0.14, 'triangle', 0.22));
       break;
     case 'die':
       [523,392,330,262,196].forEach((f,i)=> playTone(f, t+i*0.09, 0.22, 'triangle', 0.24));
@@ -534,7 +552,6 @@ function generateLevel(){
     const sx   = x + gap;
     solids.push({x:sx, y:GROUND_Y, w:segW, h:220, ground:true});
 
-    // --- 敵（車両：ランダムな種類） ---
     const nE = segW > 470 ? 2 : 1;
     for (let i=0;i<nE;i++){
       const ex = sx + 70 + Math.random()*(segW-150);
@@ -548,7 +565,6 @@ function generateLevel(){
       });
     }
 
-    // --- 浮遊足場 ---
     let platform = null;
     if (Math.random() < 0.82){
       const pw = rnd(90,160);
@@ -568,8 +584,6 @@ function generateLevel(){
       }
     }
 
-    // --- はてなブロック ---
-    // 浮遊足場と重なる場合は、足場の上に十分なクリアランスを確保して配置
     if (segW > 320 && Math.random() < 0.85){
       const nB = rndI(1,3);
       const bw = 32, bh = 32;
@@ -577,28 +591,24 @@ function generateLevel(){
       for (let i=0;i<nB;i++){
         const bx = startX + i*36;
         let by = GROUND_Y - 180;
-
-        // 既存の足場と x 範囲が重なる場合、十分な高さまで押し上げる
-        // キャラクター（最大56px）がブロックと足場の間に入れるよう 78px のクリアランス
         let changed = true, iter = 0;
         while (changed && iter < 8){
           changed = false;
           for (const s of solids){
             if (s.ground) continue;
             if (s.x + s.w <= bx || s.x >= bx + bw) continue;
-            if (by >= s.y + s.h) continue;              // ブロックが足場より下 → OK
-            if (by + bh <= s.y - 66) continue;          // すでに十分なクリアランス
+            if (by >= s.y + s.h) continue;
+            if (by + bh <= s.y - 66) continue;
             by = s.y - 78 - bh;
             changed = true;
           }
           iter++;
         }
-
         if (isFree(bx-4, by-4, bw+8, bh+8, 6)){
           solids.push({
             x:bx, y:by, w:bw, h:bh,
             block:true, used:false,
-            content: Math.random() < 0.38 ? 'mushroom' : 'coin',
+            content: Math.random() < 0.42 ? 'food' : 'coin',
             bounceT: 0
           });
           addOcc(bx-6, by-6, bw+12, bh+12);
@@ -655,7 +665,7 @@ function generateLevel(){
   solids.push({
     x: fx + 320, y: GROUND_Y - 180, w: 32, h: 32,
     block:true, used:false,
-    content: Math.random() < 0.5 ? 'mushroom' : 'coin',
+    content: Math.random() < 0.5 ? 'food' : 'coin',
     bounceT: 0
   });
 }
@@ -666,20 +676,21 @@ function generateLevel(){
 function makePlayer(idx, charDef){
   const isRed = (idx === 0);
   const ch = charDef || CHARACTERS[idx];
+  const sz = playerSize(0);
   return {
     idx,
     main:  isRed ? '#e63946' : '#2fa84f',
     dark:  isRed ? '#c62b38' : '#1d7a37',
     charEmoji: ch.e,
     charName:  ch.n,
-    x: 60 + idx*54, y: GROUND_Y - SMALL_H,
-    w: SMALL_W, h: SMALL_H,
+    x: 60 + idx*54, y: GROUND_Y - sz.h,
+    w: sz.w, h: sz.h,
+    growth: 0,
     vx:0, vy:0, onGround:false, face:1,
     coyote:0, runTime:0,
     safeX: 60 + idx*54, safeFeetY: GROUND_Y,
     camX: 0,
     dead:false, deadTimer:0, invuln:0,
-    big:false,
     coins:0, score:0, stomps:0,
     raceTime: 0, finished: false, finishTime: 0
   };
@@ -689,7 +700,7 @@ function makePlayer(idx, charDef){
    ゲーム状態
    ========================================================= */
 let mode = 'points';
-let gameState = 'menu';   // menu | charSelect | playing | paused | over
+let gameState = 'menu';
 let gameTime = 0;
 let gameOverAt = 0;
 let winnerIdx = -1;
@@ -846,13 +857,15 @@ function triggerBlock(s, p){
   sfx('block');
   spawnParticles(s.x + s.w/2, s.y + s.h, '#ffd23f', 7, 110);
 
-  if (s.content === 'mushroom'){
+  if (s.content === 'food'){
+    const f = FOODS[rndI(0, FOODS.length-1)];
     powerups.push({
-      x: s.x + s.w/2 - 13,
+      x: s.x + s.w/2 - 14,
       y: s.y - 28,
-      w: 26, h: 26,
+      w: 28, h: 28,
       vx: 85, vy: 0,
-      onGround: false
+      onGround: false,
+      emoji: f
     });
     sfx('emerge');
   } else {
@@ -887,21 +900,14 @@ function killPlayer(p){
   sfx('die');
   spawnParticles(p.x+p.w/2, p.y+p.h/2, p.main, 18, 290);
 }
-function growPlayer(p){
-  if (p.big) return false;
-  p.big = true;
+
+function applyGrowth(p, delta){
   const feet = p.y + p.h;
-  p.w = BIG_W; p.h = BIG_H;
-  p.y = feet - BIG_H;
-  return true;
-}
-function shrinkPlayer(p){
-  if (!p.big) return false;
-  p.big = false;
-  const feet = p.y + p.h;
-  p.w = SMALL_W; p.h = SMALL_H;
-  p.y = feet - SMALL_H;
-  return true;
+  p.growth = Math.max(0, p.growth + delta);
+  const sz = playerSize(p.growth);
+  p.w = sz.w;
+  p.h = sz.h;
+  p.y = feet - p.h;
 }
 
 function updatePlayer(p, dt){
@@ -913,10 +919,12 @@ function updatePlayer(p, dt){
     p.y += p.vy*dt;
     if (p.deadTimer <= 0){
       p.dead = false;
-      p.big = false;
-      p.w = SMALL_W; p.h = SMALL_H;
+      // 復活時にサイズをリセット
+      p.growth = 0;
+      const sz = playerSize(0);
+      p.w = sz.w; p.h = sz.h;
       p.x = p.safeX;
-      p.y = p.safeFeetY - SMALL_H;
+      p.y = p.safeFeetY - p.h;
       p.vx = 0; p.vy = 0;
       p.onGround = false;
       p.invuln = 1.4;
@@ -998,7 +1006,7 @@ function updatePlayer(p, dt){
 }
 
 /* =========================================================
-   パワーアップ
+   食べ物パワーアップ
    ========================================================= */
 function updatePowerups(dt){
   for (let i=powerups.length-1;i>=0;i--){
@@ -1025,12 +1033,12 @@ function updatePowerups(dt){
     for (const p of P){
       if (p.dead || p.finished) continue;
       if (aabb(p, m)){
-        const grew = growPlayer(p);
-        const gain = grew ? 200 : 300;
+        applyGrowth(p, +1);
+        const gain = 200;
         p.score += gain;
-        sfx('powerup');
-        spawnParticles(m.x+m.w/2, m.y+m.h/2, '#ff5a5a', 16, 230);
-        showPoints(p.x + p.w/2, p.y - 18, '+' + gain, '#ff5a5a');
+        sfx('eat');
+        spawnParticles(m.x+m.w/2, m.y+m.h/2, '#ffae42', 16, 230);
+        showPoints(p.x + p.w/2, p.y - 20, '+' + gain, '#ffae42');
         powerups.splice(i,1);
         break;
       }
@@ -1068,17 +1076,18 @@ function updateEnemies(dt){
           p.stomps++;
           sfx('stomp');
           spawnParticles(e.x+e.w/2, e.y+e.h/2, '#c98a4b', 12, 210);
-          showPoints(p.x + p.w/2, p.y - 18, '+100', '#5ee36a');
+          showPoints(p.x + p.w/2, p.y - 20, '+100', '#5ee36a');
         } else if (p.invuln <= 0){
-          if (p.big){
-            shrinkPlayer(p);
+          if (p.growth > 0){
+            // 1段階縮小（食べ物1個分）
+            applyGrowth(p, -1);
             p.invuln = 2.0;
             p.vx = (p.x < e.x ? -1 : 1) * 270;
             p.vy = -390;
             p.score = Math.max(0, p.score - 50);
             sfx('shrink');
             spawnParticles(p.x+p.w/2, p.y+p.h/2, '#ffd23f', 14, 240);
-            showPoints(p.x + p.w/2, p.y - 18, '-50', '#ff9a9a');
+            showPoints(p.x + p.w/2, p.y - 20, '-50', '#ff9a9a');
           } else {
             killPlayer(p);
           }
@@ -1107,7 +1116,7 @@ function updateCoins(dt){
         if (own && !own.dead && !own.finished){
           own.coins++;
           own.score += 50;
-          showPoints(own.x + own.w/2, own.y - 18, '+50', '#ffd23f');
+          showPoints(own.x + own.w/2, own.y - 20, '+50', '#ffd23f');
         }
         spawnParticles(c.x, c.y, '#ffd23f', 5, 130);
         coins.splice(i,1);
@@ -1125,7 +1134,7 @@ function updateCoins(dt){
         p.score += 50;
         sfx('coin');
         spawnParticles(c.x, c.y, '#ffd23f', 8, 165);
-        showPoints(p.x + p.w/2, p.y - 18, '+50', '#ffd23f');
+        showPoints(p.x + p.w/2, p.y - 20, '+50', '#ffd23f');
         coins.splice(i,1);
         break;
       }
@@ -1134,7 +1143,7 @@ function updateCoins(dt){
 }
 
 /* =========================================================
-   ゴール（先着で終了／高さで 100〜300 ポイント）
+   ゴール
    ========================================================= */
 function checkGoal(){
   for (const p of P){
@@ -1142,17 +1151,15 @@ function checkGoal(){
     if (p.x + p.w > GOAL_X){
       p.finished = true;
 
-      // 地面からの高さに応じてボーナス（0〜200）
       const hAbove = Math.max(0, (GROUND_Y - p.h) - p.y);
       const heightBonus = Math.min(200, Math.floor(hAbove));
-      const goalScore = 100 + heightBonus;   // 100〜300
+      const goalScore = 100 + heightBonus;
 
       p.score += goalScore;
       p.finishTime = p.raceTime;
 
       sfx('goal');
-      // 獲得ポイントを見えるように表示
-      showPoints(p.x + p.w/2, p.y - 30, '+' + goalScore, '#ffd23f');
+      showPoints(p.x + p.w/2, p.y - 32, '+' + goalScore, '#ffd23f');
 
       for (let i=0;i<50;i++){
         spawnParticles(GOAL_X + rnd(-70,70), 200 + rnd(-90,90),
@@ -1408,7 +1415,6 @@ function drawGoal(){
   ctx.fillStyle = '#c3c3d4';
   ctx.fillRect(GOAL_X+1, baseY-250, 3, 226);
 
-  // 高さの目盛り（上に行くほど高得点）
   for (let i=0;i<5;i++){
     const y = baseY - 60 - i*40;
     ctx.fillStyle = i === 4 ? 'rgba(255,210,63,0.95)' : 'rgba(255,210,63,0.5)';
@@ -1438,7 +1444,7 @@ function drawGoal(){
 }
 
 /* =========================================================
-   コイン・キノコ
+   コイン
    ========================================================= */
 function drawCoin(c){
   const bob = c.pop ? 0 : Math.sin(time*3 + c.phase) * 4;
@@ -1482,34 +1488,36 @@ function drawCoin(c){
   ctx.beginPath(); ctx.arc(4, -5.5, 1.1, 0, Math.PI*2); ctx.fill();
   ctx.restore();
 }
-function drawMushroom(m){
+
+/* =========================================================
+   食べ物
+   ========================================================= */
+function drawFood(m){
   const cx = m.x + m.w/2;
+  const cy = m.y + m.h/2;
   const by = m.y + m.h;
-  ctx.fillStyle = 'rgba(0,0,0,0.15)';
-  ctx.beginPath(); ctx.ellipse(cx, by, 12, 4, 0, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = '#f5deb3';
-  roundRect(ctx, cx-7, by-12, 14, 12, 3); ctx.fill();
-  ctx.fillStyle = 'rgba(180,140,90,0.5)';
-  ctx.fillRect(cx-7, by-4, 14, 2);
-  const g = ctx.createLinearGradient(cx, by-26, cx, by-8);
-  g.addColorStop(0, '#ff5a5a');
-  g.addColorStop(1, '#c02020');
-  ctx.fillStyle = g;
+
+  // 影
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath(); ctx.ellipse(cx, by + 1, m.w*0.55, 4, 0, 0, Math.PI*2); ctx.fill();
+
+  // キラキラ
+  const tw = 0.45 + Math.sin(time*6 + m.x*0.03)*0.35;
+  ctx.save();
+  ctx.globalAlpha = tw;
+  ctx.fillStyle = 'rgba(255,255,220,0.9)';
   ctx.beginPath();
-  ctx.arc(cx, by-11, 14, Math.PI, 0);
-  ctx.lineTo(cx+14, by-9);
-  ctx.lineTo(cx-14, by-9);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = '#fff';
+  ctx.arc(cx + m.w*0.55, cy - m.h*0.35, 2.2, 0, Math.PI*2); ctx.fill();
   ctx.beginPath();
-  ctx.arc(cx-5, by-17, 3.2, 0, Math.PI*2);
-  ctx.arc(cx+5, by-15, 2.6, 0, Math.PI*2);
-  ctx.arc(cx,   by-21, 2.2, 0, Math.PI*2);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(120,30,30,0.6)';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(cx, by-11, 14, Math.PI, 0); ctx.stroke();
+  ctx.arc(cx - m.w*0.6, cy - m.h*0.05, 1.7, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // 絵文字
+  const size = m.w * 1.55;
+  ctx.font = size + 'px ' + EMOJI_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(m.emoji, cx, cy + m.h*0.03);
 }
 
 /* =========================================================
@@ -1537,7 +1545,7 @@ function drawEnemy(e){
   // 絵文字
   ctx.save();
   ctx.translate(cx, by - e.h/2);
-  if (e.vx > 0) ctx.scale(-1, 1);  // 右向きのとき左右反転
+  if (e.vx > 0) ctx.scale(-1, 1);
   const size = Math.max(e.w, e.h) * 1.45;
   ctx.font = size + 'px ' + EMOJI_FONT;
   ctx.textAlign = 'center';
@@ -1549,7 +1557,7 @@ function drawEnemy(e){
 }
 
 /* =========================================================
-   プレイヤー（動物絵文字）
+   プレイヤー（動物絵文字）— 周囲の丸枠なし
    ========================================================= */
 function drawPlayer(p){
   const x = p.x, y = p.y, w = p.w, h = p.h;
@@ -1567,19 +1575,11 @@ function drawPlayer(p){
   const cx = x + w/2;
   const cy = y + h/2;
 
-  // プレイヤー識別リング
-  const ringR = Math.max(w, h) * 0.62;
-  ctx.fillStyle = 'rgba(255,255,255,0.22)';
-  ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, Math.PI*2); ctx.fill();
-  ctx.strokeStyle = p.main;
-  ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, Math.PI*2); ctx.stroke();
-
-  // 絵文字
+  // 絵文字（左右反転対応）
   ctx.save();
   ctx.translate(cx, cy);
   if (p.dead) ctx.rotate((0.95 - p.deadTimer) * 5);
-  if (p.face === 1) ctx.scale(-1, 1);  // 右向きのとき左右反転
+  if (p.face === 1) ctx.scale(-1, 1);
   const size = Math.max(w, h) * 1.15;
   ctx.font = size + 'px ' + EMOJI_FONT;
   ctx.textAlign = 'center';
@@ -1617,7 +1617,7 @@ function drawWorld(camX){
   }
   for (const m of powerups){
     if (m.x + m.w < left || m.x > right) continue;
-    drawMushroom(m);
+    drawFood(m);
   }
   for (const e of enemies){
     if (e.x + e.w < left || e.x > right) continue;
@@ -1719,19 +1719,22 @@ function drawHUD(idx, W, halfH){
   ctx.fillRect(bcx - bw*1.1 - bw/2, bcy - bh/2, bw, bh);
   ctx.fillRect(bcx + bw*1.1 - bw/2, bcy - bh/2, bw, bh);
 
-  if (p.big){
+  // 成長レベル表示
+  if (p.growth > 0){
     const by = row2Y + row2H + Math.round(pad*0.5);
-    ctx.font = '900 ' + Math.round(fs*0.95) + 'px -apple-system,sans-serif';
-    const btxt = 'BIG';
-    const bw2 = ctx.measureText(btxt).width + ch*0.9;
-    drawPill(pad, by, bw2, Math.round(row2H*0.85), 'rgba(255,90,90,0.85)');
-    ctx.fillStyle = '#ff5a5a';
-    ctx.beginPath();
-    ctx.arc(pad + ch*0.42, by + row2H*0.42, ch*0.18, 0, Math.PI*2);
-    ctx.fill();
+    const bH = Math.round(row2H*0.9);
+    ctx.font = '900 ' + Math.round(fs*0.9) + 'px -apple-system,sans-serif';
+    const btxt = 'SIZE x' + (1 + p.growth*GROWTH_STEP).toFixed(1);
+    const bw2 = ctx.measureText(btxt).width + ch*1.05;
+    drawPill(pad, by, bw2, bH, 'rgba(255,174,66,0.9)');
+    ctx.font = Math.round(ch*0.62) + 'px ' + EMOJI_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🍎', pad + ch*0.55, by + bH/2 + 1);
+    ctx.font = '900 ' + Math.round(fs*0.9) + 'px -apple-system,sans-serif';
     ctx.fillStyle = '#fff';
     ctx.textAlign = 'left';
-    ctx.fillText(btxt, pad + ch*0.78, by + row2H*0.42 + fs*0.05);
+    ctx.fillText(btxt, pad + ch*1.02, by + bH/2 + fs*0.05);
   }
 
   ctx.restore();
@@ -1767,7 +1770,6 @@ function drawOppIndicator(idx, W, halfH, camX){
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = 2;
   ctx.stroke();
-  // 相手のキャラ絵文字
   ctx.font = '22px ' + EMOJI_FONT;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -1838,8 +1840,8 @@ function drawMenu(W, halfH){
    キャラクター選択画面
    ========================================================= */
 function getCharGridLayout(W, halfH){
-  const cols = 9;
-  const rows = 5;
+  const cols = 10;
+  const rows = Math.ceil(CHARACTERS.length / cols);
   const topMargin = halfH*0.18;
   const bottomMargin = halfH*0.12;
   const availH = halfH - topMargin - bottomMargin;
@@ -1862,15 +1864,12 @@ function getCharGridLayout(W, halfH){
   }
   return cells;
 }
-
 function drawCharSelect(W, halfH, idx){
   ctx.fillStyle = 'rgba(6,10,20,0.85)';
   ctx.fillRect(0, 0, W, halfH);
-
   ctx.save();
   ctx.textBaseline = 'middle';
 
-  // タイトル
   const fs1 = Math.round(halfH*0.06);
   ctx.font = '900 ' + fs1 + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.fillStyle = '#ffd23f';
@@ -1881,7 +1880,6 @@ function drawCharSelect(W, halfH, idx){
   const oppColor = idx === 0 ? '#2fa84f' : '#e63946';
 
   const cells = getCharGridLayout(W, halfH);
-
   for (let i=0; i<cells.length; i++){
     const cell = cells[i];
     const chDef = CHARACTERS[i];
@@ -1890,7 +1888,6 @@ function drawCharSelect(W, halfH, idx){
     const mySel  = charSelected[idx] === i;
     const oppSel = charSelected[1-idx] === i;
 
-    // 背景
     if (mySel){
       ctx.fillStyle = 'rgba(255,210,63,0.35)';
     } else if (oppSel){
@@ -1901,7 +1898,6 @@ function drawCharSelect(W, halfH, idx){
     roundRect(ctx, cell.x+2, cell.y+2, cell.w-4, cell.h-4, cell.h*0.22);
     ctx.fill();
 
-    // ボーダー
     if (mySel){
       ctx.strokeStyle = myColor;
       ctx.lineWidth = 4;
@@ -1916,8 +1912,7 @@ function drawCharSelect(W, halfH, idx){
       ctx.setLineDash([]);
     }
 
-    // 絵文字
-    const emojiSize = Math.round(cell.h*0.72);
+    const emojiSize = Math.round(cell.h*0.68);
     ctx.font = emojiSize + 'px ' + EMOJI_FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -1925,7 +1920,6 @@ function drawCharSelect(W, halfH, idx){
     ctx.fillText(chDef.e, cell.x + cell.w/2, cell.y + cell.h/2 + cell.h*0.02);
   }
 
-  // 下部ステータス
   const fs2 = Math.round(halfH*0.045);
   ctx.font = '800 ' + fs2 + 'px -apple-system,"Hiragino Sans",sans-serif';
   ctx.textAlign = 'center';
@@ -1945,7 +1939,6 @@ function drawCharSelect(W, halfH, idx){
     ctx.globalAlpha = 1;
   }
 
-  // 選択中プレビュー
   if (charSelected[idx] !== null){
     const sel = CHARACTERS[charSelected[idx]];
     ctx.font = '900 ' + Math.round(fs1*0.7) + 'px -apple-system,"Hiragino Sans",sans-serif';
@@ -2127,7 +2120,6 @@ function render(){
   ctx.fillStyle = '#05070c';
   ctx.fillRect(0, 0, W, H);
 
-  // 下側：P0
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, halfH, W, halfH);
@@ -2136,7 +2128,6 @@ function render(){
   renderHalf(0, W, halfH);
   ctx.restore();
 
-  // 上側：P1（180°回転）
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, 0, W, halfH);
@@ -2186,7 +2177,6 @@ function handleCanvasTap(sx, sy){
     for (let i=0; i<cells.length; i++){
       if (i >= CHARACTERS.length) break;
       if (pointInRect(hx, hy, cells[i])){
-        // すでに選択済みなら変更不可
         if (charSelected[idx] === null){
           charSelected[idx] = i;
           sfx('select');
@@ -2254,7 +2244,6 @@ function startGame(){
 }
 
 function restart(){
-  // 同じキャラクターでもう一度
   generateLevel();
   const c0 = CHARACTERS[charSelected[0]] || CHARACTERS[0];
   const c1 = CHARACTERS[charSelected[1]] || CHARACTERS[1];
